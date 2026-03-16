@@ -14,7 +14,7 @@ import threading
 import traceback
 import re
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any, Iterable
+from typing import List, Tuple, Optional, Dict, Any, Iterable, Set
 from datetime import datetime
 from pathlib import Path
 from enum import Enum
@@ -599,9 +599,10 @@ class EnhancedDocumentIndexer:
     def _dedup_results_by_text(self, results: List[Tuple[str, Any, float]]) -> List[Tuple[str, Any, float]]:
         """Deduplicate retrieval results by chunk text, preserving order.
 
+        Each element of *results* is a ``(chunk_text, metadata, score)`` tuple.
         Uses Python's native string hashing — faster than computing md5 per result.
         """
-        seen_chunk_texts: set = set()
+        seen_chunk_texts: Set[str] = set()
         unique_results: List[Tuple[str, Any, float]] = []
         for result in results:
             if result[0] not in seen_chunk_texts:
@@ -1317,7 +1318,11 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
             self.metrics_text.setPlainText(f"Error loading analytics: {e}")
 
     def _toggle_precision_setting(self, setting_key: str, state: int) -> None:
-        """Update a precision setting in the local cache and on the RAG config."""
+        """Update a precision setting in the local cache and on the RAG config.
+
+        Expected *setting_key* values: ``"query_expansion"``, ``"enable_reranking"``,
+        ``"enable_hyde"`` — all are attributes of :class:`RagConfig`.
+        """
         enabled = state == QtCore.Qt.Checked
         self.precision_settings[setting_key] = enabled
         setattr(self.rag.rcfg, setting_key, enabled)
