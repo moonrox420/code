@@ -10,6 +10,7 @@ import glob
 import shutil
 import hashlib
 import logging
+import threading
 import traceback
 import re
 from dataclasses import dataclass, field
@@ -53,11 +54,46 @@ if LOCAL_GGUF_MODEL:
             "Install with: pip install llama-cpp-python"
         ) from e
 
-from docx import Document as DocxDocument
-import markdown
-from bs4 import BeautifulSoup
-import html2text
-import tiktoken  # For token counting
+# PyMuPDF — optional, preferred PDF backend (pip install PyMuPDF)
+try:
+    import fitz  # type: ignore  # noqa: F401
+    HAS_PYMUPDF = True
+except ImportError:
+    HAS_PYMUPDF = False
+    fitz = None  # type: ignore
+
+# python-docx — DOCX parsing (pip install python-docx). NOT the broken 'docx' package.
+try:
+    from docx import Document as DocxDocument  # type: ignore
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+    DocxDocument = None  # type: ignore
+
+# Markdown/HTML helpers — optional but recommended
+try:
+    import markdown  # type: ignore
+    from bs4 import BeautifulSoup  # type: ignore
+    HAS_MARKDOWN = True
+except ImportError:
+    HAS_MARKDOWN = False
+    markdown = None  # type: ignore
+    BeautifulSoup = None  # type: ignore
+
+try:
+    import html2text  # type: ignore
+    HAS_HTML2TEXT = True
+except ImportError:
+    HAS_HTML2TEXT = False
+    html2text = None  # type: ignore
+
+# Token counting — optional; falls back to word-count when absent
+try:
+    import tiktoken  # type: ignore
+    HAS_TIKTOKEN = True
+except ImportError:
+    HAS_TIKTOKEN = False
+    tiktoken = None  # type: ignore
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
@@ -154,10 +190,13 @@ class ChunkMetadata:
 class TextProcessor:
     def __init__(self, cfg: RagConfig):
         self.cfg = cfg
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self._tiktoken_enc = tiktoken.get_encoding("cl100k_base") if HAS_TIKTOKEN else None
 
     def count_tokens(self, text: str) -> int:
-        return len(self.tokenizer.encode(text))
+        if self._tiktoken_enc is not None:
+            return len(self._tiktoken_enc.encode(text))
+        # Word-count approximation: ~1.3 tokens per word on average
+        return int(len(text.split()) * 1.3)
 
     def clean_text(self, text: str) -> str:
         text = re.sub(r"\s+", " ", text)
@@ -258,9 +297,17 @@ class TextProcessor:
 class EnhancedDocumentIndexer:
     def __init__(self, embed_model: SentenceTransformer, cfg: RagConfig):
         self.embed = embed_model
+        _mcd = getattr(embed_model, "_model_card_data", None)
+        self._embed_model_name: str = (
+            getattr(_mcd, "model_name", None) or cfg.version
+        )
         self.cfg = cfg
         self.text_processor = TextProcessor(cfg)
         self.embedding_cache: Dict[str, np.ndarray] = {}
+        # In-memory index cache — invalidated when ingest() rebuilds the index
+        self._index_cache: Optional[faiss.Index] = None
+        self._chunks_cache: Optional[List[str]] = None
+        self._meta_cache: Optional[Dict] = None
         os.makedirs(cfg.raw_dir, exist_ok=True)
         os.makedirs(cfg.chunks_dir, exist_ok=True)
 
@@ -319,21 +366,13 @@ class EnhancedDocumentIndexer:
         text_parts, title, author = [], None, None
         page_count = 0
 
-        # PyMuPDF guarded
-        try:
-            import fitz  # type: ignore
-            HAS_PYMUPDF = True
-        except ImportError:
-            HAS_PYMUPDF = False
-            fitz = None
-
         if HAS_PYMUPDF:
             try:
-                doc = fitz.open(path)
+                doc = fitz.open(path)  # type: ignore[union-attr]
                 page_count = len(doc)
-                metadata = doc.metadata
-                title = metadata.get("title")
-                author = metadata.get("author")
+                pdf_meta = doc.metadata
+                title = pdf_meta.get("title") or None
+                author = pdf_meta.get("author") or None
                 for page_num in range(page_count):
                     page = doc[page_num]
                     text = page.get_text()
@@ -342,22 +381,29 @@ class EnhancedDocumentIndexer:
                 doc.close()
                 return "\n\n".join(text_parts), page_count, title, author
             except Exception as e:
-                logger.warning(f"PyMuPDF failed, falling back to PyPDF2: {e}")
+                logger.warning(f"PyMuPDF failed for {path}, falling back to PyPDF2: {e}")
+                text_parts.clear()
 
+        # Fallback: PyPDF2
         from PyPDF2 import PdfReader
         with open(path, "rb") as f:
             reader = PdfReader(f)
             page_count = len(reader.pages)
-            metadata = reader.metadata
-            title = metadata.get("/Title") if metadata else None
-            author = metadata.get("/Author") if metadata else None
+            pdf_meta = reader.metadata
+            title = pdf_meta.get("/Title") if pdf_meta else None
+            author = pdf_meta.get("/Author") if pdf_meta else None
             for i, page in enumerate(reader.pages):
-                text = page.extract_text()
-                if text:
-                    text_parts.append(f"--- Page {i + 1} ---\n{text}")
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(f"--- Page {i + 1} ---\n{page_text}")
         return "\n\n".join(text_parts), page_count, title, author
 
     def _read_docx(self, path: str) -> Tuple[str, int]:
+        if not HAS_DOCX or DocxDocument is None:
+            raise ImportError(
+                "python-docx is required to read .docx files. "
+                "Install with: pip install python-docx  (NOT the broken 'docx' package)"
+            )
         doc = DocxDocument(path)
         text_parts = []
         word_count = 0
@@ -370,17 +416,30 @@ class EnhancedDocumentIndexer:
     def _read_markdown(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
             md_text = f.read()
-        html = markdown.markdown(md_text)
-        soup = BeautifulSoup(html, "html.parser")
-        return soup.get_text()
+        if HAS_MARKDOWN and markdown is not None and BeautifulSoup is not None:
+            html = markdown.markdown(md_text)
+            soup = BeautifulSoup(html, "html.parser")
+            return soup.get_text()
+        # Fallback: strip markdown syntax with regex
+        text = re.sub(r"#{1,6}\s*", "", md_text)
+        text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+        text = re.sub(r"`{1,3}[^`]*`{1,3}", "", text)
+        text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+        return text.strip()
 
     def _read_html(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
             html = f.read()
-        converter = html2text.HTML2Text()
-        converter.ignore_links = False
-        converter.ignore_images = True
-        return converter.handle(html)
+        if HAS_HTML2TEXT and html2text is not None:
+            converter = html2text.HTML2Text()
+            converter.ignore_links = False
+            converter.ignore_images = True
+            return converter.handle(html)
+        if HAS_MARKDOWN and BeautifulSoup is not None:
+            soup = BeautifulSoup(html, "html.parser")
+            return soup.get_text()
+        # Last resort: strip tags with regex
+        return re.sub(r"<[^>]+>", " ", html).strip()
 
     def _extract_tags(self, path: str, text: str) -> List[str]:
         tags = []
@@ -394,22 +453,40 @@ class EnhancedDocumentIndexer:
                 break
         return list(set(tags))
 
-    def _deduplicate_chunks(self, chunks: List[Tuple[str, ChunkMetadata]], embeddings: np.ndarray) -> Tuple[List, np.ndarray]:
+    def _deduplicate_chunks(self, chunks: List[Tuple[str, Any]], embeddings: np.ndarray) -> Tuple[List, np.ndarray]:
         if not self.cfg.deduplicate or len(chunks) < 2:
             return chunks, embeddings
-        unique_chunks, unique_embeddings, unique_indices = [], [], []
-        for i, (chunk, meta) in enumerate(chunks):
-            dup = False
-            for j in unique_indices:
-                similarity = np.dot(embeddings[i], embeddings[j])
-                if similarity > self.cfg.min_similarity:
-                    dup = True
-                    break
-            if not dup:
-                unique_chunks.append((chunk, meta))
-                unique_embeddings.append(embeddings[i])
-                unique_indices.append(i)
-        return unique_chunks, np.array(unique_embeddings)
+
+        # Pass 1: exact-text hash dedup (O(n)) — cheap and catches copy-paste duplicates
+        seen_hashes: set = set()
+        pass1_chunks, pass1_embs = [], []
+        for (chunk_text, meta), emb in zip(chunks, embeddings):
+            h = hashlib.md5(chunk_text.encode()).hexdigest()
+            if h not in seen_hashes:
+                seen_hashes.add(h)
+                pass1_chunks.append((chunk_text, meta))
+                pass1_embs.append(emb)
+
+        if len(pass1_chunks) < 2:
+            return pass1_chunks, np.array(pass1_embs)
+
+        # Pass 2: near-duplicate embedding similarity (O(n²) but on already-reduced set)
+        embs_arr = np.array(pass1_embs)
+        # Compute full similarity matrix at once (vectorised — much faster than per-pair loop)
+        sim_matrix = embs_arr @ embs_arr.T
+        np.fill_diagonal(sim_matrix, 0.0)
+
+        unique_mask = np.ones(len(pass1_chunks), dtype=bool)
+        for i in range(len(pass1_chunks)):
+            if not unique_mask[i]:
+                continue
+            for j in range(i + 1, len(pass1_chunks)):
+                if unique_mask[j] and sim_matrix[i, j] > self.cfg.min_similarity:
+                    unique_mask[j] = False
+
+        unique_chunks = [c for c, keep in zip(pass1_chunks, unique_mask) if keep]
+        unique_embs = embs_arr[unique_mask]
+        return unique_chunks, unique_embs
 
     def ingest(self, progress_cb=None) -> Dict[str, Any]:
         files = glob.glob(os.path.join(self.cfg.raw_dir, "**", "*.*"), recursive=True)
@@ -457,7 +534,9 @@ class EnhancedDocumentIndexer:
         metadata = {
             "version": self.cfg.version,
             "created": datetime.now().isoformat(),
-            "embedding_model": self.embed.model_name,
+            "embedding_model": getattr(
+                getattr(self.embed, "_model_card_data", None), "model_name", None
+            ) or self.cfg.version,
             "total_chunks": len(all_chunks),
             "total_documents": len(processed_files),
             "dimension": dimension,
@@ -477,6 +556,9 @@ class EnhancedDocumentIndexer:
         if progress_cb:
             progress_cb(100)
 
+        # Invalidate in-memory cache so the next retrieve loads the new index
+        self.invalidate_cache()
+
         return {
             "total_chunks": len(all_chunks),
             "processed_files": len(processed_files),
@@ -485,6 +567,10 @@ class EnhancedDocumentIndexer:
         }
 
     def load(self) -> Tuple[faiss.Index, List[str], Dict]:
+        # Return cached values if available (avoids disk I/O on every retrieve call)
+        if self._index_cache is not None and self._chunks_cache is not None and self._meta_cache is not None:
+            return self._index_cache, self._chunks_cache, self._meta_cache
+
         if not os.path.exists(self.cfg.index_path):
             raise FileNotFoundError(f"Index not found at {self.cfg.index_path}")
         if not os.path.exists(self.cfg.meta_path):
@@ -493,11 +579,22 @@ class EnhancedDocumentIndexer:
         with open(self.cfg.meta_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
         chunks_file = os.path.join(self.cfg.chunks_dir, "chunks.json")
-        chunks = []
+        chunks: List[str] = []
         if os.path.exists(chunks_file):
             with open(chunks_file, "r", encoding="utf-8") as f:
                 chunks = json.load(f)
+
+        # Populate cache
+        self._index_cache = index
+        self._chunks_cache = chunks
+        self._meta_cache = metadata
         return index, chunks, metadata
+
+    def invalidate_cache(self) -> None:
+        """Call after a new index is written to disk so the next retrieve reloads it."""
+        self._index_cache = None
+        self._chunks_cache = None
+        self._meta_cache = None
 
     def retrieve(self, query: str, k: int = None, query_expansion: bool = None) -> List[Tuple[str, Dict, float]]:
         if k is None:
@@ -523,9 +620,14 @@ class EnhancedDocumentIndexer:
                     seen_chunks.add(idx)
 
         all_results.sort(key=lambda x: x[2], reverse=True)
-        unique_results = []
+        # Deduplicate retrieve results by FAISS index slot — they are already unique by slot.
+        # A lightweight text-hash check catches identical strings that slipped through.
+        unique_results: List[Tuple[str, Dict, float]] = []
+        seen_texts: set = set()
         for result in all_results:
-            if not self._is_duplicate_result(result, unique_results):
+            h = hashlib.md5(result[0].encode()).hexdigest()
+            if h not in seen_texts:
+                seen_texts.add(h)
                 unique_results.append(result)
         return unique_results[:k]
 
@@ -548,17 +650,6 @@ class EnhancedDocumentIndexer:
                     expansions.append(query.lower().replace(term, alt))
         return list(set(expansions))
 
-    def _is_duplicate_result(self, new_result: Tuple, existing_results: List[Tuple], threshold: float = 0.95) -> bool:
-        if not existing_results:
-            return False
-        new_embedding = self.embed.encode([new_result[0]], convert_to_numpy=True, normalize_embeddings=True)[0]
-        for existing in existing_results:
-            existing_embedding = self.embed.encode([existing[0]], convert_to_numpy=True, normalize_embeddings=True)[0]
-            similarity = np.dot(new_embedding, existing_embedding)
-            if similarity > threshold:
-                return True
-        return False
-
 
 # ---------------- Enhanced RAG Generator ---------------- #
 class EnhancedRagGenerator:
@@ -573,7 +664,7 @@ class EnhancedRagGenerator:
         self.reranker = None
         if rcfg.enable_reranking:
             try:
-                self.reranker = CrossEncoder(rcfg.reranker_name, device=mcfg.device)
+                self.reranker = CrossEncoder(mcfg.reranker_name, device=mcfg.device)
             except Exception as e:
                 logger.warning(f"Failed to load reranker: {e}. Continuing without reranking.")
                 self.rcfg.enable_reranking = False
@@ -618,7 +709,7 @@ class EnhancedRagGenerator:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
             self.mcfg.llm_name,
-            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             low_cpu_mem_usage=True,
@@ -642,12 +733,14 @@ class EnhancedRagGenerator:
         return reranked[:self.rcfg.k_final]
 
     def _generate_hyde(self, query: str) -> str:
-        prompt = f"""Based on the query below, generate a comprehensive answer that would contain the information needed to answer it.
-
-Query: {query}
-
-Hypothetical answer:"""
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        if self.tokenizer is None or self.model is None:
+            raise RuntimeError("HyDE requires the HF Transformers backend (not supported with GGUF).")
+        prompt = (
+            "Based on the query below, generate a comprehensive answer that would contain "
+            "the information needed to answer it.\n\n"
+            f"Query: {query}\n\nHypothetical answer:"
+        )
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(self.model.device)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -656,8 +749,7 @@ Hypothetical answer:"""
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        hyde_text = self.tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
-        return hyde_text
+        return self.tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
 
     def build_precision_prompt(self, query: str, context: List[Tuple[str, Dict, float]]) -> str:
         if not context:
@@ -771,8 +863,7 @@ ANSWER:"""
             streamer=streamer,
             pad_token_id=self.tokenizer.eos_token_id,
         )
-        import threading
-        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
+        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
         thread.start()
         return streamer, final_results
 
@@ -863,15 +954,21 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self._build_ui()
 
     def _build_ui(self):
-        tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self._build_chat_tab(), "Precision Chat")
-        tabs.addTab(self._build_settings_tab(), "Advanced Settings")
-        tabs.addTab(self._build_analytics_tab(), "Analytics")
-        tabs.addTab(self._build_about_tab(), "About")
-        self.setCentralWidget(tabs)
+        self._tabs = QtWidgets.QTabWidget()
+        self._tabs.addTab(self._build_chat_tab(), "Precision Chat")
+        self._tabs.addTab(self._build_settings_tab(), "Advanced Settings")
+        self._analytics_tab_idx = self._tabs.addTab(self._build_analytics_tab(), "Analytics")
+        self._tabs.addTab(self._build_about_tab(), "About")
+        # Auto-refresh analytics when the tab is selected
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self.setCentralWidget(self._tabs)
         self.status = QtWidgets.QStatusBar()
-        self.status.showMessage("Ready - Precision Mode Active")
+        self.status.showMessage("Ready — Precision Mode Active")
         self.setStatusBar(self.status)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == self._analytics_tab_idx:
+            self._refresh_analytics()
 
     def _build_chat_tab(self):
         w = QtWidgets.QWidget()
@@ -937,8 +1034,21 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         top.addWidget(ingest_btn)
         v.addLayout(top)
 
+        # Query history bar
+        history_row = QtWidgets.QHBoxLayout()
+        history_row.addWidget(QtWidgets.QLabel("History:"))
+        self.history_combo = QtWidgets.QComboBox()
+        self.history_combo.setEditable(False)
+        self.history_combo.setMinimumWidth(300)
+        self.history_combo.currentTextChanged.connect(
+            lambda text: self.prompt_edit.setPlainText(text) if text else self.prompt_edit.clear()
+        )
+        history_row.addWidget(self.history_combo, stretch=1)
+        v.addLayout(history_row)
+
         self.prompt_edit = QtWidgets.QTextEdit()
         self.prompt_edit.setPlaceholderText("Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)")
+        self.prompt_edit.setMinimumHeight(80)
         self.prompt_edit.keyPressEvent = self._wrap_enter(self.prompt_edit.keyPressEvent)
 
         ask_btn = QtWidgets.QPushButton("Ask")
@@ -973,16 +1083,33 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         grid = QtWidgets.QFormLayout()
         self.model_edit = QtWidgets.QLineEdit(self.rag.mcfg.llm_name)
         self.embed_edit = QtWidgets.QLineEdit(self.rag.mcfg.embed_name)
+        self.raw_dir_edit = QtWidgets.QLineEdit(self.rag.rcfg.raw_dir)
         grid.addRow("LLM model", self.model_edit)
         grid.addRow("Embed model", self.embed_edit)
+        grid.addRow("Raw data folder", self.raw_dir_edit)
+
+        # Font size control
+        font_row = QtWidgets.QHBoxLayout()
+        font_row.addWidget(QtWidgets.QLabel("Answer font size:"))
+        self.font_spin = QtWidgets.QSpinBox()
+        self.font_spin.setRange(8, 24)
+        self.font_spin.setValue(14)
+        self.font_spin.valueChanged.connect(
+            lambda pt: self.answer_view.setFont(QtGui.QFont("Monospace", pt))
+        )
+        font_row.addWidget(self.font_spin)
+        font_row.addStretch()
+        grid.addRow("", font_row)
         v.addLayout(grid)
 
         apply_btn = QtWidgets.QPushButton("Apply & Reload Models")
         apply_btn.clicked.connect(self.handle_reload_models)
         v.addWidget(apply_btn)
 
-        folder_btn = QtWidgets.QPushButton("Open raw folder")
-        folder_btn.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(self.rag.rcfg.raw_dir)))
+        folder_btn = QtWidgets.QPushButton("Open raw folder in OS")
+        folder_btn.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl.fromLocalFile(self.raw_dir_edit.text() or self.rag.rcfg.raw_dir)
+        ))
         v.addWidget(folder_btn)
 
         save_chat_btn = QtWidgets.QPushButton("Save Chat History")
@@ -1049,22 +1176,30 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
 
     def handle_reload_models(self):
         try:
-            self.rag.mcfg.llm_name = self.model_edit.text().strip()
-            self.rag.mcfg.embed_name = self.embed_edit.text().strip()
+            new_llm = self.model_edit.text().strip()
+            new_embed = self.embed_edit.text().strip()
+            if new_llm:
+                self.rag.mcfg.llm_name = new_llm
+            if new_embed:
+                self.rag.mcfg.embed_name = new_embed
+            new_raw = self.raw_dir_edit.text().strip()
+            if new_raw:
+                self.rag.rcfg.raw_dir = new_raw
             self.rag.__init__(self.rag.mcfg, self.rag.rcfg)
             self.status.showMessage("Models reloaded.", 6000)
         except Exception as e:
-            self.status.showMessage(str(e), 8000)
+            self.status.showMessage(f"Reload failed: {e}", 8000)
 
     def handle_ingest(self):
         self.progress = QtWidgets.QProgressDialog("Indexing...", "Abort", 0, 100, self)
         self.progress.setWindowModality(QtCore.Qt.WindowModal)
         self.progress.setMinimumDuration(0)
-        worker = IngestWorker(self.rag.indexer)
-        worker.progress.connect(self.progress.setValue)
-        worker.done.connect(self._ingest_done)
-        worker.failed.connect(lambda msg: self.status.showMessage(msg, 8000))
-        worker.start()
+        # Store reference on self so the worker is not garbage-collected mid-run
+        self._ingest_worker = IngestWorker(self.rag.indexer)
+        self._ingest_worker.progress.connect(self.progress.setValue)
+        self._ingest_worker.done.connect(self._ingest_done)
+        self._ingest_worker.failed.connect(lambda msg: self.status.showMessage(msg, 8000))
+        self._ingest_worker.start()
 
     def _ingest_done(self, count: int):
         self.progress.setValue(100)
@@ -1092,9 +1227,16 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
             return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
+            self.worker.wait(2000)
+        # Add to history (avoid duplicates at top)
+        existing = [self.history_combo.itemText(i) for i in range(self.history_combo.count())]
+        if q not in existing:
+            self.history_combo.insertItem(0, q)
+            if self.history_combo.count() > 50:
+                self.history_combo.removeItem(self.history_combo.count() - 1)
         self.answer_view.clear()
         self.ctx_view.clear()
-        self.status.showMessage("Thinking…")
+        self.status.showMessage("Retrieving context & generating answer…")
         self.worker = AskWorker(
             self.rag,
             q,
@@ -1105,6 +1247,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.worker.tokenSignal.connect(self._on_token)
         self.worker.ctxSignal.connect(self._on_ctx)
         self.worker.errorSignal.connect(self._on_error)
+        self.worker.finished.connect(lambda: self.status.showMessage("Done.", 5000))
         self.worker.start()
 
     def cancel_stream(self):
@@ -1188,6 +1331,15 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     def _toggle_hyde(self, state):
         self.precision_settings["enable_hyde"] = state == QtCore.Qt.Checked
         self.rag.rcfg.enable_hyde = self.precision_settings["enable_hyde"]
+
+    def closeEvent(self, event):
+        """Gracefully stop background workers before closing."""
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(3000)
+        if hasattr(self, "_ingest_worker") and self._ingest_worker.isRunning():
+            self._ingest_worker.wait(3000)
+        event.accept()
 
 
 # ---------------- Entrypoint ---------------- #

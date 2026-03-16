@@ -13,6 +13,16 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from sentence_transformers import SentenceTransformer
 from PyQt5 import QtCore, QtGui, QtWidgets
 import qdarkstyle
+
+# PyMuPDF — optional, preferred PDF backend (pip install PyMuPDF)
+try:
+    import fitz  # type: ignore
+    _HAS_PYMUPDF = True
+except ImportError:
+    _HAS_PYMUPDF = False
+    fitz = None  # type: ignore
+
+# PyPDF2 — required fallback
 from PyPDF2 import PdfReader
 
 
@@ -49,6 +59,14 @@ class DocumentIndexer:
     def _read_file(self, path: str) -> str:
         ext = os.path.splitext(path)[1].lower()
         if ext == ".pdf":
+            if _HAS_PYMUPDF:
+                try:
+                    doc = fitz.open(path)  # type: ignore[union-attr]
+                    text = "\n".join(doc[i].get_text() for i in range(len(doc)))
+                    doc.close()
+                    return text
+                except Exception:
+                    pass  # fall through to PyPDF2
             reader = PdfReader(path)
             return "\n".join(page.extract_text() or "" for page in reader.pages)
         else:
