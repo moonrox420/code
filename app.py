@@ -3,6 +3,7 @@ import sys
 import json
 import glob
 import shutil
+import threading
 import traceback
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
@@ -82,13 +83,13 @@ class DocumentIndexer:
         files = glob.glob(os.path.join(self.cfg.raw_dir, "**", "*.*"), recursive=True)
         chunks, meta = [], []
         total = len(files)
-        for idx_file, fp in enumerate(files):
+        for file_index, fp in enumerate(files):
             text = self._read_file(fp)
-            for idx, ch in enumerate(self._split(text)):
-                meta.append({"source": fp, "chunk_id": idx})
-                chunks.append(ch)
+            for chunk_index, chunk_text in enumerate(self._split(text)):
+                meta.append({"source": fp, "chunk_id": chunk_index})
+                chunks.append(chunk_text)
             if progress_cb:
-                progress_cb(int((idx_file + 1) / max(total, 1) * 90))
+                progress_cb(int((file_index + 1) / max(total, 1) * 90))
         if not chunks:
             if progress_cb:
                 progress_cb(0)
@@ -167,7 +168,6 @@ class RagGenerator:
             streamer=streamer,
             pad_token_id=self.tokenizer.eos_token_id,
         )
-        import threading
         t = threading.Thread(target=self.model.generate, kwargs=kwargs)
         t.start()
         return streamer, ctx
@@ -217,18 +217,18 @@ class AskWorker(QtCore.QThread):
     ctxSignal = QtCore.pyqtSignal(list)
     errorSignal = QtCore.pyqtSignal(str)
 
-    def __init__(self, rag: RagGenerator, query: str, k: int, temp: float, max_tokens: int):
+    def __init__(self, rag: RagGenerator, query: str, k: int, temperature: float, max_tokens: int):
         super().__init__()
         self.rag = rag
         self.query = query
         self.k = k
-        self.temp = temp
+        self.temperature = temperature
         self.max_tokens = max_tokens
         self._stop = False
 
     def run(self):
         try:
-            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temp, self.max_tokens)
+            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temperature, self.max_tokens)
             self.ctxSignal.emit(ctx)
             for token in streamer:
                 if self._stop:
@@ -265,12 +265,12 @@ class MainWindow(QtWidgets.QMainWindow):
         v = QtWidgets.QVBoxLayout(w)
 
         top = QtWidgets.QHBoxLayout()
-        self.k_spin = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.k_spin.setRange(1, 20)
-        self.k_spin.setValue(self.rag.rcfg.k)
-        self.k_spin.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.k_label = QtWidgets.QLabel(f"Top‑K: {self.k_spin.value()}")
-        self.k_spin.valueChanged.connect(lambda val: self.k_label.setText(f"Top‑K: {val}"))
+        self.top_k_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.top_k_slider.setRange(1, 20)
+        self.top_k_slider.setValue(self.rag.rcfg.k)
+        self.top_k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
+        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.top_k_slider.value()}")
+        self.top_k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
         self.temp_spin.setSingleStep(0.05)
@@ -290,8 +290,8 @@ class MainWindow(QtWidgets.QMainWindow):
         export_btn = QtWidgets.QPushButton("Export Answer.md")
         export_btn.clicked.connect(self.export_answer)
 
-        top.addWidget(self.k_label)
-        top.addWidget(self.k_spin)
+        top.addWidget(self.top_k_label)
+        top.addWidget(self.top_k_slider)
         top.addWidget(QtWidgets.QLabel("Temp"))
         top.addWidget(self.temp_spin)
         top.addWidget(QtWidgets.QLabel("Max tokens"))
@@ -441,8 +441,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.showMessage("Answer exported.", 4000)
 
     def handle_ask(self):
-        q = self.prompt_edit.toPlainText().strip()
-        if not q:
+        query = self.prompt_edit.toPlainText().strip()
+        if not query:
             return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
@@ -451,8 +451,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Thinking…")
         self.worker = AskWorker(
             self.rag,
-            q,
-            self.k_spin.value(),
+            query,
+            self.top_k_slider.value(),
             self.temp_spin.value(),
             self.tokens_spin.value(),
         )
