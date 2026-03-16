@@ -1,0 +1,130 @@
+git diff Options Reference
+=========================
+
+BASIC USAGE
+-----------
+git diff                        Show unstaged changes in working tree
+git diff --staged               Show staged changes (also: --cached)
+git diff HEAD                   Show all changes since last commit
+git diff <commit>               Show changes since a specific commit
+git diff <commit1> <commit2>    Show changes between two commits
+git diff <branch1> <branch2>    Show changes between two branches
+
+OUTPUT FORMAT OPTIONS
+---------------------
+-p, --patch                     Generate patch output (default)
+-u                              Unified diff format (alias for --patch)
+--no-patch, -s                  Suppress diff output (summary only)
+--raw                           Generate raw format output
+--stat                          Show diffstat (files changed, insertions, deletions)
+--shortstat                     Show only the last line of --stat
+--name-only                     Show only names of changed files
+--name-status                   Show names and status of changed files
+--diff-filter=<filter>          Select files by status (A=added, D=deleted, M=modified, R=renamed, etc.)
+--numstat                       Show numeric statistics for each file
+--summary                       Show condensed summary of extended header info
+--patch-with-stat               Show patch and diffstat together
+--patch-with-raw                Show patch and raw format together
+
+CONTEXT OPTIONS
+---------------
+-U<n>, --unified=<n>            Generate diffs with <n> lines of context (default: 3)
+--function-context, -W          Show the whole surrounding function as context
+
+WHITESPACE OPTIONS
+------------------
+-b, --ignore-space-change       Ignore changes in amount of whitespace
+-w, --ignore-all-space          Ignore all whitespace changes
+--ignore-blank-lines            Ignore changes whose lines are all blank
+--ignore-cr-at-eol              Ignore CR at end of line
+--ignore-space-at-eol           Ignore changes in whitespace at EOL
+--ws-error-highlight=<kind>     Highlight whitespace errors (old, new, context, all)
+
+RENAME AND COPY DETECTION
+--------------------------
+-M, --find-renames[=<n>]        Detect renames (optional similarity threshold, default 50%)
+-C, --find-copies[=<n>]         Detect copies (optional similarity threshold)
+--find-copies-harder            Inspect all unmodified files as rename/copy candidates
+-B, --break-rewrites[=<n>]      Break complete rewrites into delete+add pairs
+-D, --irreversible-delete       Omit preimage for deletes in combined diff
+
+DIFF ALGORITHM OPTIONS
+----------------------
+--diff-algorithm=<alg>          Choose diff algorithm:
+                                  default, myers    Classic Myers algorithm
+                                  minimal           Spend extra time for smallest diff
+                                  patience          Patience diff algorithm
+                                  histogram         Histogram diff (extension of patience)
+--patience                      Use patience diff algorithm
+--histogram                     Use histogram diff algorithm
+--minimal                       Spend extra time to get smallest possible diff
+
+COLOR OPTIONS
+-------------
+--color[=<when>]                Colorize output (always, never, auto)
+--no-color                      Turn off colored diff
+--color-moved[=<mode>]          Color moved lines differently
+--color-moved-ws=<modes>        Configure whitespace handling for moved lines
+--color-words[=<regex>]         Color word-level differences
+
+BINARY AND OBJECT HANDLING
+---------------------------
+--binary                        Output binary diffs for use with git apply
+--text, -a                      Treat all files as text
+--no-textconv                   Do not use external text conversion filters
+--textconv                      Allow external text conversion filters (default)
+
+LIMITING OUTPUT
+---------------
+--relative[=<path>]             Show only changes relative to given path
+-R                              Swap inputs (reverse the diff)
+--follow                        Continue listing history of a file beyond renames
+-- <path>...                    Limit diff to specific files or directories
+--no-index                      Compare two files on the filesystem (outside git)
+-l<n>                           Limit rename detection to <n> files
+
+SUBMODULE OPTIONS
+-----------------
+--submodule[=<format>]          Show submodule changes (short, log, diff)
+--ignore-submodules[=<when>]    Ignore submodule changes (none, untracked, dirty, all)
+
+COMBINED DIFF (MERGE COMMITS)
+------------------------------
+-c                              Show combined diff for merge commits
+--cc                            Show dense combined diff (omit uninteresting hunks)
+
+OUTPUT DESTINATION
+------------------
+--output=<file>                 Output to a specific file
+--output-indicator-new=<char>   Specify the character to indicate new lines (default: +)
+--output-indicator-old=<char>   Specify the character to indicate old lines (default: -)
+--output-indicator-context=<c>  Specify the character to indicate context lines (default: space)
+
+EXAMPLES
+--------
+# Show staged changes with 5 lines of context
+git diff --staged -U5
+
+# Show only modified files between two branches
+git diff --name-only main feature-branch
+
+# Compare two branches with statistics
+git diff --stat main..develop
+
+# Show word-level diff
+git diff --word-diff
+
+# Ignore whitespace and show renamed files
+git diff -b -M HEAD~1
+
+# Use histogram algorithm for cleaner diffs
+git diff --histogram
+
+# Show diff of a specific file
+git diff HEAD -- path/to/file.py
+
+# Reverse a diff (swap old/new)
+git diff -R HEAD
+
+# Show diff outside of a repository
+git diff --no-index file1.txt file2.txt
