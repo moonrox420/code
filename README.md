@@ -32,7 +32,7 @@ To run without any Hugging Face model downloads:
    export LOCAL_GGUF_MODEL=/path/to/your_model.q6_k.gguf  # Linux/macOS
    ```
 3. (Optional) Tune performance with these environment variables:
-   - `LLAMA_CPP_THREADS` — number of CPU threads to use. Set to your physical core count for best performance; `0` (default) = auto-detect.
+   - `LLAMA_CPP_THREADS` — number of CPU threads to use. Set to your physical core count for best performance; `0` (default) = auto (`os.cpu_count()`, fallback `4` if unavailable).
    - `LLAMA_CPP_N_GPU_LAYERS` — number of transformer layers to offload to GPU. Use `0` (default) for CPU-only inference. If `llama-cpp-python` was built with GPU support, try `20`–`40` for a 14B quantized model and tune to fit your VRAM.
 4. Launch (HF downloads will be skipped entirely):
    ```
