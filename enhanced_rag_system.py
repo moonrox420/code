@@ -33,6 +33,20 @@ LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0"))  # >0 onl
 HF_LLM_NAME_DEFAULT = "mistralai/Mistral-7B-Instruct-v0.2"  # public default
 HF_LLM_NAME = os.getenv("MCFG_LLM", HF_LLM_NAME_DEFAULT)
 
+
+def _resolve_threads() -> int:
+    """Return the effective llama.cpp thread count.
+
+    If LLAMA_CPP_THREADS is explicitly set to a positive integer, use it.
+    Otherwise (default 0) fall back to the physical CPU count.
+    """
+    if LLAMA_CPP_THREADS > 0:
+        return LLAMA_CPP_THREADS
+    try:
+        return os.cpu_count() or 4
+    except Exception:
+        return 4
+
 # Optional llama.cpp import
 Llama = None
 if LOCAL_GGUF_MODEL:
@@ -585,18 +599,24 @@ class EnhancedRagGenerator:
                 raise ImportError("llama-cpp-python not available while LOCAL_GGUF_MODEL is set.")
             if not os.path.isfile(LOCAL_GGUF_MODEL):
                 raise FileNotFoundError(f"LOCAL_GGUF_MODEL path not found: {LOCAL_GGUF_MODEL}")
-            logger.info(f"Loading local GGUF via llama.cpp: {LOCAL_GGUF_MODEL}")
+            threads = _resolve_threads()
+            logger.info(
+                f"Using llama.cpp with threads={threads}, "
+                f"n_gpu_layers={LLAMA_CPP_N_GPU_LAYERS}, "
+                f"model={LOCAL_GGUF_MODEL}"
+            )
             self.llama_cpp = Llama(
                 model_path=LOCAL_GGUF_MODEL,
                 n_ctx=4096,
-                n_threads=LLAMA_CPP_THREADS if LLAMA_CPP_THREADS > 0 else None,
+                n_threads=threads,
                 n_gpu_layers=LLAMA_CPP_N_GPU_LAYERS,
                 logits_all=False,
                 use_mlock=False,
                 seed=0,
             )
-            # HF models not used in this mode
-            return
+            self.tokenizer = None
+            self.model = None
+            return  # prevents HF download
 
         # HF Transformers path (default)
         self.tokenizer = AutoTokenizer.from_pretrained(self.mcfg.llm_name, trust_remote_code=True)
@@ -604,7 +624,7 @@ class EnhancedRagGenerator:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
             self.mcfg.llm_name,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             low_cpu_mem_usage=True,
