@@ -27,11 +27,34 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 import qdarkstyle
 
 # Env toggles and runtime settings
+# LOCAL_GGUF_MODEL  – absolute path to a .gguf file; when set, llama.cpp is used and HF is skipped.
+# LLAMA_CPP_THREADS – CPU threads for llama.cpp (0 = let llama.cpp auto-detect; recommended: set to physical core count).
+# LLAMA_CPP_N_GPU_LAYERS – layers offloaded to GPU (0 = CPU-only / safe default; set 20-40 for a 14B quant if built with CUDA/Metal).
+# MCFG_LLM          – HuggingFace model name; ignored when LOCAL_GGUF_MODEL is set.
 LOCAL_GGUF_MODEL = os.getenv("LOCAL_GGUF_MODEL", "").strip()
-LLAMA_CPP_THREADS = int(os.getenv("LLAMA_CPP_THREADS", "0"))  # 0 = auto
-LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0"))  # >0 only if built with GPU
+LLAMA_CPP_THREADS = int(os.getenv("LLAMA_CPP_THREADS", "0"))
+LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0"))
 HF_LLM_NAME_DEFAULT = "mistralai/Mistral-7B-Instruct-v0.2"  # public default
 HF_LLM_NAME = os.getenv("MCFG_LLM", HF_LLM_NAME_DEFAULT)
+
+
+def _resolve_llama_threads() -> Optional[int]:
+    """Return the thread count to pass to Llama(), logging the resolved value.
+
+    Returns ``None`` when LLAMA_CPP_THREADS is 0 so llama.cpp auto-detects."""
+    if LLAMA_CPP_THREADS > 0:
+        logger.info(f"llama.cpp threads: {LLAMA_CPP_THREADS} (from LLAMA_CPP_THREADS env var)")
+        return LLAMA_CPP_THREADS
+    try:
+        detected = os.cpu_count() or 0
+    except Exception:
+        detected = 0
+    logger.info(
+        f"llama.cpp threads: auto (LLAMA_CPP_THREADS=0); "
+        f"system reports {detected} logical CPU(s). "
+        "Tip: set LLAMA_CPP_THREADS=<physical cores> for best single-instance throughput."
+    )
+    return None
 
 # Optional llama.cpp import
 Llama = None
@@ -585,11 +608,14 @@ class EnhancedRagGenerator:
                 raise ImportError("llama-cpp-python not available while LOCAL_GGUF_MODEL is set.")
             if not os.path.isfile(LOCAL_GGUF_MODEL):
                 raise FileNotFoundError(f"LOCAL_GGUF_MODEL path not found: {LOCAL_GGUF_MODEL}")
-            logger.info(f"Loading local GGUF via llama.cpp: {LOCAL_GGUF_MODEL}")
+            logger.info(
+                f"Loading local GGUF via llama.cpp: {LOCAL_GGUF_MODEL} "
+                f"(n_gpu_layers={LLAMA_CPP_N_GPU_LAYERS})"
+            )
             self.llama_cpp = Llama(
                 model_path=LOCAL_GGUF_MODEL,
                 n_ctx=4096,
-                n_threads=LLAMA_CPP_THREADS if LLAMA_CPP_THREADS > 0 else None,
+                n_threads=_resolve_llama_threads(),
                 n_gpu_layers=LLAMA_CPP_N_GPU_LAYERS,
                 logits_all=False,
                 use_mlock=False,
