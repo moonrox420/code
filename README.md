@@ -16,31 +16,46 @@
 - Context viewer with scores + sources for transparency.
 - Optional llama.cpp GGUF backend (fully local, no HF downloads).
 
+## Running fully local with GGUF (llama.cpp)
+
+Use this mode to avoid any Hugging Face model downloads.
+
+**Prerequisites**
+- Install the llama.cpp Python binding: `pip install llama-cpp-python`
+- Have a local `.gguf` model file on disk.
+
+**Environment variables**
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOCAL_GGUF_MODEL` | *(unset)* | Full path to your `.gguf` file. **Required** to enable GGUF mode. |
+| `LLAMA_CPP_THREADS` | `0` | CPU threads. `0` = auto (`cpu_count`, fallback 4); otherwise set to your physical core count. |
+| `LLAMA_CPP_N_GPU_LAYERS` | `0` | Layers offloaded to GPU. `0` = CPU-only. If built with GPU support, try `20`–`40` for a 14B quant and tune to fit VRAM. |
+| `MCFG_LLM` | *(optional)* | HF model name/path. Can be left empty when `LOCAL_GGUF_MODEL` is set — the GGUF backend short-circuits any HF loading. |
+
+**Run (all HF downloads skipped)**
+
+Windows:
+```powershell
+$env:LOCAL_GGUF_MODEL = "C:\path\to\your_model.q6_k.gguf"
+$env:LLAMA_CPP_THREADS = "0"
+$env:LLAMA_CPP_N_GPU_LAYERS = "0"
+$env:MCFG_LLM = ""
+python enhanced_rag_system.py
+```
+
+Linux / macOS:
+```bash
+export LOCAL_GGUF_MODEL=/path/to/your_model.q6_k.gguf
+export LLAMA_CPP_THREADS=0
+export LLAMA_CPP_N_GPU_LAYERS=0
+export MCFG_LLM=
+python enhanced_rag_system.py
+```
+
+**Sanity check**
+- Logs should contain: `Using llama.cpp with threads=..., n_gpu_layers=..., model=...`
+- No Hugging Face model download messages should appear.
+- Clear (unset) `LOCAL_GGUF_MODEL` to revert to the default HF/Transformers backend.
+
 ## TROUBLESHOOTING
-
-### Running fully local with GGUF (llama.cpp)
-
-To run without any Hugging Face model downloads:
-
-1. Install the llama.cpp Python binding:
-   ```
-   pip install llama-cpp-python
-   ```
-2. Set the path to your GGUF model file:
-   ```
-   set LOCAL_GGUF_MODEL=C:\path\to\your_model.q6_k.gguf   # Windows
-   export LOCAL_GGUF_MODEL=/path/to/your_model.q6_k.gguf  # Linux/macOS
-   ```
-3. (Optional) Tune performance with these environment variables:
-   - `LLAMA_CPP_THREADS` — number of CPU threads to use. Set to your physical core count for best performance; `0` (default) = auto-detect.
-   - `LLAMA_CPP_N_GPU_LAYERS` — number of transformer layers to offload to GPU. Use `0` (default) for CPU-only inference. If `llama-cpp-python` was built with GPU support, try `20`–`40` for a 14B quantized model and tune to fit your VRAM.
-4. Launch (HF downloads will be skipped entirely):
-   ```
-   python enhanced_rag_system.py
-   ```
-
-**Sanity check:** After startup, look for the log line:
-```
-Using llama.cpp with threads=..., n_gpu_layers=..., model=...
-```
-and confirm there are **no** Hugging Face model download logs. Unset `LOCAL_GGUF_MODEL` (or set it to an empty string) to revert to the default HF/Transformers backend.
