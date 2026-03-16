@@ -16,6 +16,15 @@
 - Context viewer with scores + sources for transparency.
 - Optional llama.cpp GGUF backend (fully local, no HF downloads).
 
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `LOCAL_GGUF_MODEL` | _(empty)_ | Absolute path to a `.gguf` model file. When set, enables the llama.cpp backend and skips all Hugging Face downloads. |
+| `LLAMA_CPP_THREADS` | `0` | CPU threads for llama.cpp inference. `0` = auto-detect (`os.cpu_count()`). Set to your physical core count for best throughput. |
+| `LLAMA_CPP_N_GPU_LAYERS` | `0` | Transformer layers to offload to GPU. `0` = CPU-only. Requires `llama-cpp-python` built with GPU support; try `20`–`40` for a 14B quant and tune to fit your VRAM. |
+| `MCFG_LLM` | `mistralai/Mistral-7B-Instruct-v0.2` | Hugging Face model ID used when **not** running in GGUF mode. Ignored when `LOCAL_GGUF_MODEL` is set. |
+
 ## TROUBLESHOOTING
 
 ### Running fully local with GGUF (llama.cpp)
@@ -31,10 +40,15 @@ To run without any Hugging Face model downloads:
    set LOCAL_GGUF_MODEL=C:\path\to\your_model.q6_k.gguf   # Windows
    export LOCAL_GGUF_MODEL=/path/to/your_model.q6_k.gguf  # Linux/macOS
    ```
-3. (Optional) Tune performance with these environment variables:
-   - `LLAMA_CPP_THREADS` — number of CPU threads to use. Set to your physical core count for best performance; `0` (default) = auto-detect.
-   - `LLAMA_CPP_N_GPU_LAYERS` — number of transformer layers to offload to GPU. Use `0` (default) for CPU-only inference. If `llama-cpp-python` was built with GPU support, try `20`–`40` for a 14B quantized model and tune to fit your VRAM.
-4. Launch (HF downloads will be skipped entirely):
+3. (Optional) Tune performance:
+   - `LLAMA_CPP_THREADS=<physical_cores>` — `0` (default) auto-detects via `os.cpu_count()`.
+   - `LLAMA_CPP_N_GPU_LAYERS=0` for CPU-only; if built with GPU support, try `20`–`40` for a 14B quant and tune to fit your VRAM.
+4. (Optional) Clear the HF model name to prevent any model resolution attempt:
+   ```
+   set MCFG_LLM=     # Windows
+   export MCFG_LLM=  # Linux/macOS
+   ```
+5. Launch (HF downloads are skipped automatically when `LOCAL_GGUF_MODEL` is set):
    ```
    python enhanced_rag_system.py
    ```
