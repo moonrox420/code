@@ -14,7 +14,7 @@ import threading
 import traceback
 import re
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Dict, Any, Iterable
+from typing import List, Tuple, Optional, Dict, Any, Iterable, Set
 from datetime import datetime
 from pathlib import Path
 from enum import Enum
@@ -494,7 +494,7 @@ class EnhancedDocumentIndexer:
         all_chunks, all_meta, processed_files, failed_files = [], [], [], []
         total_files = len(files)
 
-        for idx_file, file_path in enumerate(files):
+        for file_index, file_path in enumerate(files):
             try:
                 text, doc_metadata = self._read_file(file_path)
                 chunks_with_meta = self.text_processor.semantic_chunking(text, doc_metadata)
@@ -505,7 +505,7 @@ class EnhancedDocumentIndexer:
             except Exception as e:
                 failed_files.append({"path": file_path, "error": str(e)})
             if progress_cb:
-                progress_cb(int((idx_file + 1) / max(total_files, 1) * 50))
+                progress_cb(int((file_index + 1) / max(total_files, 1) * 50))
 
         if not all_chunks:
             if progress_cb:
@@ -596,6 +596,20 @@ class EnhancedDocumentIndexer:
         self._chunks_cache = None
         self._meta_cache = None
 
+    def _dedup_results_by_text(self, results: List[Tuple[str, Any, float]]) -> List[Tuple[str, Any, float]]:
+        """Deduplicate retrieval results by chunk text, preserving order.
+
+        Each element of *results* is a ``(chunk_text, metadata, score)`` tuple.
+        Uses Python's native string hashing — faster than computing md5 per result.
+        """
+        seen_chunk_texts: Set[str] = set()
+        unique_results: List[Tuple[str, Any, float]] = []
+        for result in results:
+            if result[0] not in seen_chunk_texts:
+                seen_chunk_texts.add(result[0])
+                unique_results.append(result)
+        return unique_results
+
     def retrieve(self, query: str, k: int = None, query_expansion: bool = None) -> List[Tuple[str, Dict, float]]:
         if k is None:
             k = self.cfg.k_retrieve
@@ -609,9 +623,9 @@ class EnhancedDocumentIndexer:
         all_results = []
         seen_chunks = set()
 
-        for q in expanded_queries:
-            q_emb = self.embed.encode([q], convert_to_numpy=True, normalize_embeddings=True)
-            scores, indices = index.search(q_emb, min(k * 2, len(chunks)))
+        for expanded_query in expanded_queries:
+            query_embedding = self.embed.encode([expanded_query], convert_to_numpy=True, normalize_embeddings=True)
+            scores, indices = index.search(query_embedding, min(k * 2, len(chunks)))
             for score, idx in zip(scores[0], indices[0]):
                 if idx < len(chunks) and idx not in seen_chunks:
                     chunk_text = chunks[idx]
@@ -620,16 +634,7 @@ class EnhancedDocumentIndexer:
                     seen_chunks.add(idx)
 
         all_results.sort(key=lambda x: x[2], reverse=True)
-        # Deduplicate retrieve results by FAISS index slot — they are already unique by slot.
-        # A lightweight text-hash check catches identical strings that slipped through.
-        unique_results: List[Tuple[str, Dict, float]] = []
-        seen_texts: set = set()
-        for result in all_results:
-            h = hashlib.md5(result[0].encode()).hexdigest()
-            if h not in seen_texts:
-                seen_texts.add(h)
-                unique_results.append(result)
-        return unique_results[:k]
+        return self._dedup_results_by_text(all_results)[:k]
 
     def _expand_query(self, query: str) -> List[str]:
         expansions = []
@@ -726,10 +731,11 @@ class EnhancedRagGenerator:
             return results
         pairs = [(query, r[0]) for r in results]
         scores = self.reranker.predict(pairs)
-        reranked = []
-        for (chunk, meta, _), score in zip(results, scores):
-            reranked.append((chunk, meta, float(score)))
-        reranked.sort(key=lambda x: x[2], reverse=True)
+        reranked = sorted(
+            [(chunk, meta, float(score)) for (chunk, meta, _), score in zip(results, scores)],
+            key=lambda x: x[2],
+            reverse=True,
+        )
         return reranked[:self.rcfg.k_final]
 
     def _generate_hyde(self, query: str) -> str:
@@ -825,13 +831,7 @@ ANSWER:"""
             try:
                 hyde_doc = self._generate_hyde(query)
                 hyde_results = self.indexer.retrieve(hyde_doc, k=k)
-                seen_texts = set()
-                combined = []
-                for r in initial_results + hyde_results:
-                    if r[0] not in seen_texts:
-                        combined.append(r)
-                        seen_texts.add(r[0])
-                initial_results = combined[:k * 2]
+                initial_results = self.indexer._dedup_results_by_text(initial_results + hyde_results)[:k * 2]
             except Exception as e:
                 logger.warning(f"HyDE failed: {e}")
 
@@ -842,12 +842,9 @@ ANSWER:"""
 
         prompt = self.build_precision_prompt(query, final_results)
 
-        # GGUF path
+        # GGUF path — return the generator directly; it is already iterable
         if self.llama_cpp is not None:
-            class SimpleStreamer:
-                def __iter__(self_inner):
-                    return self._gguf_stream(prompt, max_new_tokens, temperature)
-            return SimpleStreamer(), final_results
+            return self._gguf_stream(prompt, max_new_tokens, temperature), final_results
 
         # HF path
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300.0)
@@ -874,18 +871,18 @@ class AskWorker(QtCore.QThread):
     ctxSignal = QtCore.pyqtSignal(list)
     errorSignal = QtCore.pyqtSignal(str)
 
-    def __init__(self, rag: EnhancedRagGenerator, query: str, k: int, temp: float, max_tokens: int):
+    def __init__(self, rag: EnhancedRagGenerator, query: str, k: int, temperature: float, max_tokens: int):
         super().__init__()
         self.rag = rag
         self.query = query
         self.k = k
-        self.temp = temp
+        self.temperature = temperature
         self.max_tokens = max_tokens
         self._stop = False
 
     def run(self):
         try:
-            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temp, self.max_tokens)
+            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temperature, self.max_tokens)
             self.ctxSignal.emit(ctx)
             for token in streamer:
                 if self._stop:
@@ -998,8 +995,8 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.k_slider.setRange(1, 20)
         self.k_slider.setValue(self.rag.rcfg.k_final)
         self.k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.k_label = QtWidgets.QLabel(f"Top‑K: {self.k_slider.value()}")
-        self.k_slider.valueChanged.connect(lambda val: self.k_label.setText(f"Top‑K: {val}"))
+        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.k_slider.value()}")
+        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
 
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
@@ -1020,7 +1017,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         export_btn = QtWidgets.QPushButton("Export Answer.md")
         export_btn.clicked.connect(self.export_answer)
 
-        top.addWidget(self.k_label)
+        top.addWidget(self.top_k_label)
         top.addWidget(self.k_slider)
         top.addWidget(QtWidgets.QLabel("Temp"))
         top.addWidget(self.temp_spin)
@@ -1222,16 +1219,16 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
             self.status.showMessage("Answer exported.", 4000)
 
     def handle_ask(self):
-        q = self.prompt_edit.toPlainText().strip()
-        if not q:
+        query = self.prompt_edit.toPlainText().strip()
+        if not query:
             return
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(2000)
         # Add to history (avoid duplicates at top)
         existing = [self.history_combo.itemText(i) for i in range(self.history_combo.count())]
-        if q not in existing:
-            self.history_combo.insertItem(0, q)
+        if query not in existing:
+            self.history_combo.insertItem(0, query)
             if self.history_combo.count() > 50:
                 self.history_combo.removeItem(self.history_combo.count() - 1)
         self.answer_view.clear()
@@ -1239,7 +1236,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Retrieving context & generating answer…")
         self.worker = AskWorker(
             self.rag,
-            q,
+            query,
             self.k_slider.value(),
             self.temp_spin.value(),
             self.tokens_spin.value(),
@@ -1320,17 +1317,24 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             self.metrics_text.setPlainText(f"Error loading analytics: {e}")
 
-    def _toggle_query_expansion(self, state):
-        self.precision_settings["query_expansion"] = state == QtCore.Qt.Checked
-        self.rag.rcfg.query_expansion = self.precision_settings["query_expansion"]
+    def _toggle_precision_setting(self, setting_key: str, state: int) -> None:
+        """Update a precision setting in the local cache and on the RAG config.
 
-    def _toggle_reranking(self, state):
-        self.precision_settings["enable_reranking"] = state == QtCore.Qt.Checked
-        self.rag.rcfg.enable_reranking = self.precision_settings["enable_reranking"]
+        Expected *setting_key* values: ``"query_expansion"``, ``"enable_reranking"``,
+        ``"enable_hyde"`` — all are attributes of :class:`RagConfig`.
+        """
+        enabled = state == QtCore.Qt.Checked
+        self.precision_settings[setting_key] = enabled
+        setattr(self.rag.rcfg, setting_key, enabled)
 
-    def _toggle_hyde(self, state):
-        self.precision_settings["enable_hyde"] = state == QtCore.Qt.Checked
-        self.rag.rcfg.enable_hyde = self.precision_settings["enable_hyde"]
+    def _toggle_query_expansion(self, state: int) -> None:
+        self._toggle_precision_setting("query_expansion", state)
+
+    def _toggle_reranking(self, state: int) -> None:
+        self._toggle_precision_setting("enable_reranking", state)
+
+    def _toggle_hyde(self, state: int) -> None:
+        self._toggle_precision_setting("enable_hyde", state)
 
     def closeEvent(self, event):
         """Gracefully stop background workers before closing."""
