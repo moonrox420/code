@@ -1,0 +1,34 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install quality tools
+        run: pip install black flake8 pylint bandit
+
+      - name: Run Black formatter check
+        run: black --check --diff .
+
+      - name: Run Flake8
+        run: flake8 --max-line-length=88 --extend-ignore=E203,W503 .
+
+      - name: Run Pylint
+        run: pylint --disable=all --enable=E enhanced_rag_system.py app.py || true
+
+      - name: Security check with bandit
+        run: bandit -r . -x ./.git --severity-level medium || true
