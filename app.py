@@ -14,10 +14,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from sentence_transformers import SentenceTransformer
 from PyQt5 import QtCore, QtGui, QtWidgets
 import qdarkstyle
+from ui_common import DropArea
 
 # PyMuPDF — optional, preferred PDF backend (pip install PyMuPDF)
 try:
     import fitz  # type: ignore
+
     _HAS_PYMUPDF = True
 except ImportError:
     _HAS_PYMUPDF = False
@@ -77,7 +79,10 @@ class DocumentIndexer:
     def _split(self, text: str) -> List[str]:
         words = text.split()
         step = self.cfg.chunk_size - self.cfg.chunk_overlap
-        return [" ".join(words[i:i + self.cfg.chunk_size]) for i in range(0, len(words), step)]
+        return [
+            " ".join(words[i : i + self.cfg.chunk_size])
+            for i in range(0, len(words), step)
+        ]
 
     def ingest(self, progress_cb=None) -> int:
         files = glob.glob(os.path.join(self.cfg.raw_dir, "**", "*.*"), recursive=True)
@@ -96,9 +101,13 @@ class DocumentIndexer:
             return 0
         with open(self.cfg.meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, ensure_ascii=False)
-        with open(os.path.join(self.cfg.chunks_dir, "chunks.json"), "w", encoding="utf-8") as f:
+        with open(
+            os.path.join(self.cfg.chunks_dir, "chunks.json"), "w", encoding="utf-8"
+        ) as f:
             json.dump(chunks, f, ensure_ascii=False)
-        emb = self.embed.encode(chunks, batch_size=32, convert_to_numpy=True, show_progress_bar=False)
+        emb = self.embed.encode(
+            chunks, batch_size=32, convert_to_numpy=True, show_progress_bar=False
+        )
         faiss.normalize_L2(emb)
         index = faiss.IndexFlatIP(emb.shape[1])
         index.add(emb)
@@ -108,10 +117,14 @@ class DocumentIndexer:
         return len(chunks)
 
     def load(self):
-        if not (os.path.exists(self.cfg.index_path) and os.path.exists(self.cfg.meta_path)):
+        if not (
+            os.path.exists(self.cfg.index_path) and os.path.exists(self.cfg.meta_path)
+        ):
             raise FileNotFoundError("Index missing. Rebuild index first.")
         index = faiss.read_index(self.cfg.index_path)
-        with open(os.path.join(self.cfg.chunks_dir, "chunks.json"), encoding="utf-8") as f:
+        with open(
+            os.path.join(self.cfg.chunks_dir, "chunks.json"), encoding="utf-8"
+        ) as f:
             chunks = json.load(f)
         with open(self.cfg.meta_path, encoding="utf-8") as f:
             meta = json.load(f)
@@ -132,7 +145,7 @@ class RagGenerator:
         self.model = AutoModelForCausalLM.from_pretrained(
             mcfg.llm_name,
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto"
+            device_map="auto",
         )
         self.embed = SentenceTransformer(mcfg.embed_name, device=mcfg.device)
         self.indexer = DocumentIndexer(self.embed, rcfg)
@@ -143,7 +156,10 @@ class RagGenerator:
 
     def build_prompt(self, q: str, ctx) -> str:
         ctx_txt = "\n\n".join(
-            [f"[{i+1}] {c[0]}\n(source: {c[1]['source']}, score={c[2]:.3f})" for i, c in enumerate(ctx)]
+            [
+                f"[{i+1}] {c[0]}\n(source: {c[1]['source']}, score={c[2]:.3f})"
+                for i, c in enumerate(ctx)
+            ]
         )
         return (
             "You are CAN, an elite uncensored engineer. Use ONLY the provided context if helpful.\n"
@@ -151,13 +167,17 @@ class RagGenerator:
             "Answer concisely with production-grade code and reasoning."
         )
 
-    def generate_stream(self, query: str, k: int, temperature: float, max_new_tokens: int):
+    def generate_stream(
+        self, query: str, k: int, temperature: float, max_new_tokens: int
+    ):
         self.mcfg.temperature = temperature
         self.mcfg.max_new_tokens = max_new_tokens
         self.ensure_index()
         ctx = self.indexer.retrieve(query, k)
         prompt = self.build_prompt(query, ctx)
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True
+        )
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         kwargs = dict(
             **inputs,
@@ -173,28 +193,7 @@ class RagGenerator:
         return streamer, ctx
 
 
-# ---------------- UI Components ---------------- #
-class DropArea(QtWidgets.QLabel):
-    filesDropped = QtCore.pyqtSignal(list)
-
-    def __init__(self):
-        super().__init__("Drag & drop files/folders here to ingest")
-        self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setStyleSheet(
-            "border: 2px dashed #4a90e2; padding: 20px; border-radius: 12px; "
-            "color: #b8c7e0; background: #0f1624;"
-        )
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        paths = [u.toLocalFile() for u in event.mimeData().urls()]
-        self.filesDropped.emit(paths)
-
-
+# ---------------- UI Components (workers only; DropArea lives in ui_common.py) ---------------- #
 class IngestWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(int)
     done = QtCore.pyqtSignal(int)
@@ -217,7 +216,9 @@ class AskWorker(QtCore.QThread):
     ctxSignal = QtCore.pyqtSignal(list)
     errorSignal = QtCore.pyqtSignal(str)
 
-    def __init__(self, rag: RagGenerator, query: str, k: int, temperature: float, max_tokens: int):
+    def __init__(
+        self, rag: RagGenerator, query: str, k: int, temperature: float, max_tokens: int
+    ):
         super().__init__()
         self.rag = rag
         self.query = query
@@ -228,7 +229,9 @@ class AskWorker(QtCore.QThread):
 
     def run(self):
         try:
-            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temperature, self.max_tokens)
+            streamer, ctx = self.rag.generate_stream(
+                self.query, self.k, self.temperature, self.max_tokens
+            )
             self.ctxSignal.emit(ctx)
             for token in streamer:
                 if self._stop:
@@ -270,7 +273,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.top_k_slider.setValue(self.rag.rcfg.k)
         self.top_k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.top_k_slider.value()}")
-        self.top_k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
+        self.top_k_slider.valueChanged.connect(
+            lambda val: self.top_k_label.setText(f"Top‑K: {val}")
+        )
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
         self.temp_spin.setSingleStep(0.05)
@@ -304,8 +309,12 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(ingest_btn)
 
         self.prompt_edit = QtWidgets.QTextEdit()
-        self.prompt_edit.setPlaceholderText("Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)")
-        self.prompt_edit.keyPressEvent = self._wrap_enter(self.prompt_edit.keyPressEvent)
+        self.prompt_edit.setPlaceholderText(
+            "Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)"
+        )
+        self.prompt_edit.keyPressEvent = self._wrap_enter(
+            self.prompt_edit.keyPressEvent
+        )
 
         ask_btn = QtWidgets.QPushButton("Ask")
         ask_btn.setStyleSheet("font-weight: 700; padding: 10px 16px;")
@@ -350,7 +359,11 @@ class MainWindow(QtWidgets.QMainWindow):
         v.addWidget(apply_btn)
 
         folder_btn = QtWidgets.QPushButton("Open raw folder")
-        folder_btn.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(self.rag.rcfg.raw_dir)))
+        folder_btn.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(self.rag.rcfg.raw_dir)
+            )
+        )
         v.addWidget(folder_btn)
 
         save_chat_btn = QtWidgets.QPushButton("Save Chat History")
@@ -383,10 +396,14 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---- Helpers ----
     def _wrap_enter(self, orig_keypress):
         def handler(event):
-            if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() in (
+                QtCore.Qt.Key_Return,
+                QtCore.Qt.Key_Enter,
+            ):
                 self.handle_ask()
             else:
                 orig_keypress(event)
+
         return handler
 
     def handle_drop(self, paths: List[str]):
@@ -434,7 +451,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Answer copied.", 3000)
 
     def export_answer(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Answer", "answer.md", "Markdown (*.md)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Answer", "answer.md", "Markdown (*.md)"
+        )
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.answer_view.toPlainText())
@@ -487,14 +506,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # chat history
     def save_chat(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Chat", "chat.json", "JSON (*.json)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Chat", "chat.json", "JSON (*.json)"
+        )
         if path:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"answer": self.answer_view.toPlainText(), "context": self.ctx_view.toPlainText()}, f, indent=2)
+                json.dump(
+                    {
+                        "answer": self.answer_view.toPlainText(),
+                        "context": self.ctx_view.toPlainText(),
+                    },
+                    f,
+                    indent=2,
+                )
             self.status.showMessage("Chat saved.", 4000)
 
     def load_chat(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Chat", "", "JSON (*.json)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Chat", "", "JSON (*.json)"
+        )
         if path:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
