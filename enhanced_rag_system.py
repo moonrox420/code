@@ -190,7 +190,14 @@ class ChunkMetadata:
 class TextProcessor:
     def __init__(self, cfg: RagConfig):
         self.cfg = cfg
-        self._tiktoken_enc = tiktoken.get_encoding("cl100k_base") if HAS_TIKTOKEN else None
+        # Gracefully handle tiktoken initialization failures (network issues, etc.)
+        self._tiktoken_enc = None
+        if HAS_TIKTOKEN:
+            try:
+                self._tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                # Fallback to word-based counting if tiktoken fails to initialize
+                pass
 
     def count_tokens(self, text: str) -> int:
         if self._tiktoken_enc is not None:
