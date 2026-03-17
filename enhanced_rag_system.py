@@ -485,7 +485,10 @@ class EnhancedDocumentIndexer:
 
         # Pass 2: near-duplicate embedding similarity using vectorized operations
         embs_arr = np.array(pass1_embs, dtype=np.float32)
-        # Normalize for cosine similarity if not already normalized
+        # NOTE: Embeddings are typically encoded with normalize_embeddings=True upstream,
+        # so this L2-normalization is usually a no-op. We still normalize here as a
+        # defensive check to ensure cosine similarity is well-defined even if callers
+        # change the embedding configuration in the future.
         norms = np.linalg.norm(embs_arr, axis=1, keepdims=True)
         embs_arr = embs_arr / np.maximum(norms, 1e-8)
 
