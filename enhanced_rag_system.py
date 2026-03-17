@@ -100,6 +100,8 @@ except ImportError:
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from ui_common import DropArea, IngestWorker, AskWorker
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -342,7 +344,6 @@ class EnhancedDocumentIndexer:
         self._embed_model_name: str = getattr(_mcd, "model_name", None) or cfg.version
         self.cfg = cfg
         self.text_processor = TextProcessor(cfg)
-        self.embedding_cache: Dict[str, np.ndarray] = {}
         # In-memory index cache — invalidated when ingest() rebuilds the index
         self._index_cache: Optional[faiss.Index] = None
         self._chunks_cache: Optional[List[str]] = None
@@ -512,19 +513,29 @@ class EnhancedDocumentIndexer:
         if len(pass1_chunks) < 2:
             return pass1_chunks, np.array(pass1_embs)
 
-        # Pass 2: near-duplicate embedding similarity (O(n²) but on already-reduced set)
+        # Pass 2: near-duplicate embedding similarity - optimized vectorized approach
         embs_arr = np.array(pass1_embs)
         # Compute full similarity matrix at once (vectorised — much faster than per-pair loop)
         sim_matrix = embs_arr @ embs_arr.T
         np.fill_diagonal(sim_matrix, 0.0)
 
+        # Optimized: use vectorized operations to find duplicates
+        # Instead of nested loops, find all pairs above threshold at once
+        duplicate_pairs = np.argwhere(sim_matrix > self.cfg.min_similarity)
+
+        # Keep only upper triangle (avoid duplicate checks)
+        duplicate_pairs = duplicate_pairs[duplicate_pairs[:, 0] < duplicate_pairs[:, 1]]
+
+        # Mark duplicates - keep first occurrence, remove later ones
+        to_remove = set()
+        for i, j in duplicate_pairs:
+            if i not in to_remove:
+                to_remove.add(j)
+
+        # Create mask efficiently
         unique_mask = np.ones(len(pass1_chunks), dtype=bool)
-        for i in range(len(pass1_chunks)):
-            if not unique_mask[i]:
-                continue
-            for j in range(i + 1, len(pass1_chunks)):
-                if unique_mask[j] and sim_matrix[i, j] > self.cfg.min_similarity:
-                    unique_mask[j] = False
+        if to_remove:
+            unique_mask[list(to_remove)] = False
 
         unique_chunks = [c for c, keep in zip(pass1_chunks, unique_mask) if keep]
         unique_embs = embs_arr[unique_mask]
@@ -589,11 +600,6 @@ class EnhancedDocumentIndexer:
                 list(all_meta),
                 np.array(embeddings),
             )
-
-        if self.cfg.cache_embeddings:
-            for chunk_text, embedding in zip(all_chunks, embeddings):
-                cache_key = hashlib.md5(chunk_text.encode()).hexdigest()
-                self.embedding_cache[cache_key] = embedding
 
         dimension = embeddings.shape[1]
         index = faiss.IndexFlatIP(dimension)
@@ -859,15 +865,17 @@ class EnhancedRagGenerator:
             source_info = ""
             if meta and "doc_meta" in meta:
                 doc_meta = meta["doc_meta"]
-                source_info = f"Source: {{doc_meta.get('title', 'Unknown')}}"
+                title = doc_meta.get('title', 'Unknown')
+                source_info = f"Source: {title}"
                 if "page_number" in meta.get("chunk_meta", {}):
-                    source_info += f" (Page {{meta['chunk_meta']['page_number']}})"
+                    page_num = meta['chunk_meta']['page_number']
+                    source_info += f" (Page {page_num})"
             context_parts.append(
-                f"[Context {{i+1}}, Relevance: {{score:.3f}}]\n{{chunk}}\n{{source_info}}\n"
+                f"[Context {i+1}, Relevance: {score:.3f}]\n{chunk}\n{source_info}\n"
             )
         context_text = "\n---\n".join(context_parts)
 
-        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nYour task is to answer the user's question with maximum precision and accuracy.\n\nCRITICAL INSTRUCTIONS:\n1. Use ONLY the provided context if it contains relevant information\n2. If context is insufficient or irrelevant, use your general knowledge but state this clearly\n3. Provide citations like [1], [2] when using specific information from context\n4. Be concise but complete - include all necessary details\n5. For code: provide production-ready, secure, efficient implementations\n6. For architecture: provide comprehensive designs with trade-offs\n7. Include confidence estimates for your answers\n\nCONTEXT:\n{{context_text}}\n\nQUESTION: {query}\n\nSTRUCTURE YOUR ANSWER:\n1. Summary\n2. Main Answer (with citations)\n3. Confidence (High/Medium/Low)\n4. Additional Notes\n\nANSWER:"""
+        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nYour task is to answer the user's question with maximum precision and accuracy.\n\nCRITICAL INSTRUCTIONS:\n1. Use ONLY the provided context if it contains relevant information\n2. If context is insufficient or irrelevant, use your general knowledge but state this clearly\n3. Provide citations like [1], [2] when using specific information from context\n4. Be concise but complete - include all necessary details\n5. For code: provide production-ready, secure, efficient implementations\n6. For architecture: provide comprehensive designs with trade-offs\n7. Include confidence estimates for your answers\n\nCONTEXT:\n{context_text}\n\nQUESTION: {query}\n\nSTRUCTURE YOUR ANSWER:\n1. Summary\n2. Main Answer (with citations)\n3. Confidence (High/Medium/Low)\n4. Additional Notes\n\nANSWER:"""
         return prompt
 
     def _gguf_stream(
@@ -945,74 +953,7 @@ class EnhancedRagGenerator:
         thread.start()
         return streamer, final_results
 
-# ---------------- Workers ---------------- #
-class AskWorker(QtCore.QThread):
-    tokenSignal = QtCore.pyqtSignal(str)
-    ctxSignal = QtCore.pyqtSignal(list)
-    errorSignal = QtCore.pyqtSignal(str)
-
-    def __init__(self, rag: EnhancedRagGenerator, query: str, k: int, temperature: float, max_tokens: int):
-        super().__init__()
-        self.rag = rag
-        self.query = query
-        self.k = k
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self._stop = False
-
-    def run(self):
-        try:
-            streamer, ctx = self.rag.generate_stream(
-                self.query, self.k, self.temperature, self.max_tokens
-            )
-            self.ctxSignal.emit(ctx)
-            for token in streamer:
-                if self._stop:
-                    break
-                self.tokenSignal.emit(token)
-        except Exception as e:
-            self.errorSignal.emit(f"{{e}}\n{{traceback.format_exc()}}")
-
-    def stop(self):
-        self._stop = True
-
-class IngestWorker(QtCore.QThread):
-    progress = QtCore.pyqtSignal(int)
-    done = QtCore.pyqtSignal(int)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, indexer: EnhancedDocumentIndexer):
-        super().__init__()
-        self.indexer = indexer
-
-    def run(self):
-        try:
-            result = self.indexer.ingest(progress_cb=self.progress.emit)
-            self.done.emit(result.get("total_chunks", 0))
-        except Exception as e:
-            self.failed.emit(f"{{e}}\n{{traceback.format_exc()}}")
-
 # ---------------- UI ---------------- #
-class DropArea(QtWidgets.QLabel):
-    filesDropped = QtCore.pyqtSignal(list)
-
-    def __init__(self):
-        super().__init__("Drag & drop files/folders here to ingest")
-        self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setStyleSheet(
-            "border: 2px dashed #4a90e2; padding: 20px; border-radius: 12px; "
-            "color: #b8c7e0; background: #0f1624;"
-        )
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        paths = [u.toLocalFile() for u in event.mimeData().urls()]
-        self.filesDropped.emit(paths)
-
 class EnhancedMainWindow(QtWidgets.QMainWindow):
     def __init__(self, rag: EnhancedRagGenerator):
         super().__init__()
@@ -1080,8 +1021,8 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.k_slider.setRange(1, 20)
         self.k_slider.setValue(self.rag.rcfg.k_final)
         self.k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {{self.k_slider.value()}}")
-        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {{val}}"))
+        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.k_slider.value()}")
+        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
 
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
@@ -1356,8 +1297,10 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     def _on_ctx(self, ctx):
         cards = []
         for i, c in enumerate(ctx):
+            doc_meta = c[1].get('doc_meta', {})
+            title = doc_meta.get('title', 'unknown')
             cards.append(
-                f"[{{i+1}}] score={{c[2]:.3f}}\n{{c[0]}}\nsource: {{c[1].get('doc_meta', {}).get('title','unknown')}}\n"
+                f"[{i+1}] score={c[2]:.3f}\n{c[0]}\nsource: {title}\n"
                 "----------------------------------------"
             )
         self.ctx_view.setPlainText("\n".join(cards))
@@ -1399,29 +1342,32 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
                 metadata = json.load(f)
             metrics = [
                 "=== PRECISION RAG ANALYTICS ===",
-                f"Version: {{metadata.get('version', 'N/A')}}",
-                f"Created: {{metadata.get('created', 'N/A')}}",
-                f"Embedding Model: {{metadata.get('embedding_model', 'N/A')}}",
-                f"Total Documents: {{metadata.get('total_documents', 0)}}",
-                f"Total Chunks: {{metadata.get('total_chunks', 0)}}",
-                f"Index Dimension: {{metadata.get('dimension', 0)}}",
+                f"Version: {metadata.get('version', 'N/A')}",
+                f"Created: {metadata.get('created', 'N/A')}",
+                f"Embedding Model: {metadata.get('embedding_model', 'N/A')}",
+                f"Total Documents: {metadata.get('total_documents', 0)}",
+                f"Total Chunks: {metadata.get('total_chunks', 0)}",
+                f"Index Dimension: {metadata.get('dimension', 0)}",
                 "",
                 "=== PRECISION SETTINGS ===",
-                f"Query Expansion: {{self.precision_settings['query_expansion']}}",
-                f"Reranking: {{self.precision_settings['enable_reranking']}}",
-                f"HyDE: {{self.precision_settings['enable_hyde']}}",
-                f"Chunk Strategy: {{self.rag.rcfg.chunk_strategy.value}}",
-                f"Deduplication: {{self.rag.rcfg.deduplicate}}",
+                f"Query Expansion: {self.precision_settings['query_expansion']}",
+                f"Reranking: {self.precision_settings['enable_reranking']}",
+                f"HyDE: {self.precision_settings['enable_hyde']}",
+                f"Chunk Strategy: {self.rag.rcfg.chunk_strategy.value}",
+                f"Deduplication: {self.rag.rcfg.deduplicate}",
                 "",
                 "=== FILE STATISTICS ===",
             ]
             for file_info in metadata.get("processed_files", [])[:10]:
+                file_name = Path(file_info['path']).name
+                chunk_count = file_info.get('chunks', 0)
                 metrics.append(
-                    f"• {{Path(file_info['path']).name}}: {{file_info.get('chunks', 0)}} chunks"
+                    f"• {file_name}: {chunk_count} chunks"
                 )
             if len(metadata.get("processed_files", [])) > 10:
+                remaining = len(metadata['processed_files']) - 10
                 metrics.append(
-                    f"... and {{len(metadata['processed_files']) - 10}} more files"
+                    f"... and {remaining} more files"
                 )
             self.metrics_text.setPlainText("\n".join(metrics))
         except Exception as e:
