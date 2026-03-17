@@ -55,6 +55,9 @@ class TestTextProcessor:
     def test_count_tokens_fallback(self, processor):
         """Test token counting with word-based approximation"""
         text = "This is a test sentence with several words."
+        # Force use of the fallback path even if tiktoken is installed
+        if hasattr(processor, "_tiktoken_enc"):
+            processor._tiktoken_enc = None
         count = processor.count_tokens(text)
         # Should be approximately 1.3 tokens per word
         word_count = len(text.split())
