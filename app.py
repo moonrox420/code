@@ -4,7 +4,6 @@ import json
 import glob
 import shutil
 import threading
-import traceback
 from dataclasses import dataclass
 from typing import List, Tuple, Optional
 
@@ -14,6 +13,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStream
 from sentence_transformers import SentenceTransformer
 from PyQt5 import QtCore, QtGui, QtWidgets
 import qdarkstyle
+
+from ui_common import DropArea, IngestWorker, AskWorker
 
 # PyMuPDF — optional, preferred PDF backend (pip install PyMuPDF)
 try:
@@ -174,73 +175,6 @@ class RagGenerator:
 
 
 # ---------------- UI Components ---------------- #
-class DropArea(QtWidgets.QLabel):
-    filesDropped = QtCore.pyqtSignal(list)
-
-    def __init__(self):
-        super().__init__("Drag & drop files/folders here to ingest")
-        self.setAlignment(QtCore.Qt.AlignCenter)
-        self.setStyleSheet(
-            "border: 2px dashed #4a90e2; padding: 20px; border-radius: 12px; "
-            "color: #b8c7e0; background: #0f1624;"
-        )
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-
-    def dropEvent(self, event):
-        paths = [u.toLocalFile() for u in event.mimeData().urls()]
-        self.filesDropped.emit(paths)
-
-
-class IngestWorker(QtCore.QThread):
-    progress = QtCore.pyqtSignal(int)
-    done = QtCore.pyqtSignal(int)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, indexer: DocumentIndexer):
-        super().__init__()
-        self.indexer = indexer
-
-    def run(self):
-        try:
-            count = self.indexer.ingest(progress_cb=self.progress.emit)
-            self.done.emit(count)
-        except Exception as e:
-            self.failed.emit(f"{e}\n{traceback.format_exc()}")
-
-
-class AskWorker(QtCore.QThread):
-    tokenSignal = QtCore.pyqtSignal(str)
-    ctxSignal = QtCore.pyqtSignal(list)
-    errorSignal = QtCore.pyqtSignal(str)
-
-    def __init__(self, rag: RagGenerator, query: str, k: int, temperature: float, max_tokens: int):
-        super().__init__()
-        self.rag = rag
-        self.query = query
-        self.k = k
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self._stop = False
-
-    def run(self):
-        try:
-            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temperature, self.max_tokens)
-            self.ctxSignal.emit(ctx)
-            for token in streamer:
-                if self._stop:
-                    break
-                self.tokenSignal.emit(token)
-        except Exception as e:
-            self.errorSignal.emit(f"{e}\n{traceback.format_exc()}")
-
-    def stop(self):
-        self._stop = True
-
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, rag: RagGenerator):
         super().__init__()
@@ -414,11 +348,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.progress = QtWidgets.QProgressDialog("Indexing...", "Abort", 0, 100, self)
         self.progress.setWindowModality(QtCore.Qt.WindowModal)
         self.progress.setMinimumDuration(0)
-        worker = IngestWorker(self.rag.indexer)
-        worker.progress.connect(self.progress.setValue)
-        worker.done.connect(self._ingest_done)
-        worker.failed.connect(lambda msg: self.status.showMessage(msg, 8000))
-        worker.start()
+        # Store reference on self so the worker is not garbage-collected mid-run
+        self._ingest_worker = IngestWorker(self.rag.indexer)
+        self._ingest_worker.progress.connect(self.progress.setValue)
+        self._ingest_worker.done.connect(self._ingest_done)
+        self._ingest_worker.failed.connect(lambda msg: self.status.showMessage(msg, 8000))
+        self._ingest_worker.start()
 
     def _ingest_done(self, count: int):
         self.progress.setValue(100)
