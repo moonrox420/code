@@ -37,7 +37,7 @@ jobs:
 
     - name: Check code formatting with black
       run: |
-        black --check enhanced_rag_system.py test_enhanced_rag_system.py || true
+        black --check enhanced_rag_system.py test_enhanced_rag_system.py
 
     - name: Run tests with pytest
       run: |
