@@ -865,15 +865,17 @@ class EnhancedRagGenerator:
             source_info = ""
             if meta and "doc_meta" in meta:
                 doc_meta = meta["doc_meta"]
-                source_info = f"Source: {{doc_meta.get('title', 'Unknown')}}"
+                title = doc_meta.get('title', 'Unknown')
+                source_info = f"Source: {title}"
                 if "page_number" in meta.get("chunk_meta", {}):
-                    source_info += f" (Page {{meta['chunk_meta']['page_number']}})"
+                    page_num = meta['chunk_meta']['page_number']
+                    source_info += f" (Page {page_num})"
             context_parts.append(
-                f"[Context {{i+1}}, Relevance: {{score:.3f}}]\n{{chunk}}\n{{source_info}}\n"
+                f"[Context {i+1}, Relevance: {score:.3f}]\n{chunk}\n{source_info}\n"
             )
         context_text = "\n---\n".join(context_parts)
 
-        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nYour task is to answer the user's question with maximum precision and accuracy.\n\nCRITICAL INSTRUCTIONS:\n1. Use ONLY the provided context if it contains relevant information\n2. If context is insufficient or irrelevant, use your general knowledge but state this clearly\n3. Provide citations like [1], [2] when using specific information from context\n4. Be concise but complete - include all necessary details\n5. For code: provide production-ready, secure, efficient implementations\n6. For architecture: provide comprehensive designs with trade-offs\n7. Include confidence estimates for your answers\n\nCONTEXT:\n{{context_text}}\n\nQUESTION: {query}\n\nSTRUCTURE YOUR ANSWER:\n1. Summary\n2. Main Answer (with citations)\n3. Confidence (High/Medium/Low)\n4. Additional Notes\n\nANSWER:"""
+        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nYour task is to answer the user's question with maximum precision and accuracy.\n\nCRITICAL INSTRUCTIONS:\n1. Use ONLY the provided context if it contains relevant information\n2. If context is insufficient or irrelevant, use your general knowledge but state this clearly\n3. Provide citations like [1], [2] when using specific information from context\n4. Be concise but complete - include all necessary details\n5. For code: provide production-ready, secure, efficient implementations\n6. For architecture: provide comprehensive designs with trade-offs\n7. Include confidence estimates for your answers\n\nCONTEXT:\n{context_text}\n\nQUESTION: {query}\n\nSTRUCTURE YOUR ANSWER:\n1. Summary\n2. Main Answer (with citations)\n3. Confidence (High/Medium/Low)\n4. Additional Notes\n\nANSWER:"""
         return prompt
 
     def _gguf_stream(
@@ -1019,8 +1021,8 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.k_slider.setRange(1, 20)
         self.k_slider.setValue(self.rag.rcfg.k_final)
         self.k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {{self.k_slider.value()}}")
-        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {{val}}"))
+        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.k_slider.value()}")
+        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
 
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
@@ -1295,8 +1297,10 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     def _on_ctx(self, ctx):
         cards = []
         for i, c in enumerate(ctx):
+            doc_meta = c[1].get('doc_meta', {})
+            title = doc_meta.get('title', 'unknown')
             cards.append(
-                f"[{{i+1}}] score={{c[2]:.3f}}\n{{c[0]}}\nsource: {{c[1].get('doc_meta', {}).get('title','unknown')}}\n"
+                f"[{i+1}] score={c[2]:.3f}\n{c[0]}\nsource: {title}\n"
                 "----------------------------------------"
             )
         self.ctx_view.setPlainText("\n".join(cards))
@@ -1338,29 +1342,32 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
                 metadata = json.load(f)
             metrics = [
                 "=== PRECISION RAG ANALYTICS ===",
-                f"Version: {{metadata.get('version', 'N/A')}}",
-                f"Created: {{metadata.get('created', 'N/A')}}",
-                f"Embedding Model: {{metadata.get('embedding_model', 'N/A')}}",
-                f"Total Documents: {{metadata.get('total_documents', 0)}}",
-                f"Total Chunks: {{metadata.get('total_chunks', 0)}}",
-                f"Index Dimension: {{metadata.get('dimension', 0)}}",
+                f"Version: {metadata.get('version', 'N/A')}",
+                f"Created: {metadata.get('created', 'N/A')}",
+                f"Embedding Model: {metadata.get('embedding_model', 'N/A')}",
+                f"Total Documents: {metadata.get('total_documents', 0)}",
+                f"Total Chunks: {metadata.get('total_chunks', 0)}",
+                f"Index Dimension: {metadata.get('dimension', 0)}",
                 "",
                 "=== PRECISION SETTINGS ===",
-                f"Query Expansion: {{self.precision_settings['query_expansion']}}",
-                f"Reranking: {{self.precision_settings['enable_reranking']}}",
-                f"HyDE: {{self.precision_settings['enable_hyde']}}",
-                f"Chunk Strategy: {{self.rag.rcfg.chunk_strategy.value}}",
-                f"Deduplication: {{self.rag.rcfg.deduplicate}}",
+                f"Query Expansion: {self.precision_settings['query_expansion']}",
+                f"Reranking: {self.precision_settings['enable_reranking']}",
+                f"HyDE: {self.precision_settings['enable_hyde']}",
+                f"Chunk Strategy: {self.rag.rcfg.chunk_strategy.value}",
+                f"Deduplication: {self.rag.rcfg.deduplicate}",
                 "",
                 "=== FILE STATISTICS ===",
             ]
             for file_info in metadata.get("processed_files", [])[:10]:
+                file_name = Path(file_info['path']).name
+                chunk_count = file_info.get('chunks', 0)
                 metrics.append(
-                    f"• {{Path(file_info['path']).name}}: {{file_info.get('chunks', 0)}} chunks"
+                    f"• {file_name}: {chunk_count} chunks"
                 )
             if len(metadata.get("processed_files", [])) > 10:
+                remaining = len(metadata['processed_files']) - 10
                 metrics.append(
-                    f"... and {{len(metadata['processed_files']) - 10}} more files"
+                    f"... and {remaining} more files"
                 )
             self.metrics_text.setPlainText("\n".join(metrics))
         except Exception as e:
