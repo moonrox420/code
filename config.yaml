@@ -1,0 +1,85 @@
+# CAN - Precision-Optimized RAG System Configuration
+
+# Model Configuration
+model:
+  # Language model for generation
+  llm_name: "mistralai/Mistral-7B-Instruct-v0.2"
+  # Embedding model for semantic search
+  embed_name: "sentence-transformers/all-mpnet-base-v2"
+  # Fallback embedding model if primary fails
+  embed_fallback: "sentence-transformers/all-MiniLM-L6-v2"
+  # Reranker model for precision
+  reranker_name: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  # Device selection (auto-detected if empty)
+  device: "auto"  # Options: "cuda", "cpu", "auto"
+
+  # Generation parameters
+  max_new_tokens: 1024
+  temperature: 0.3
+  top_p: 0.9
+  top_k: 50
+  repetition_penalty: 1.1
+  do_sample: true
+  num_beams: 1
+
+# RAG Configuration
+rag:
+  # Data directories
+  raw_dir: "data/raw"
+  chunks_dir: "data/chunks"
+  index_path: "data/index.faiss"
+  meta_path: "data/meta.json"
+
+  # Chunking strategy
+  chunk_strategy: "hybrid"  # Options: "semantic", "fixed", "sliding", "hybrid"
+  chunk_size: 512
+  chunk_overlap: 64
+  min_chunk_size: 32
+  max_chunk_size: 768
+
+  # Retrieval parameters
+  k_retrieve: 10  # Number of chunks to retrieve initially
+  k_final: 5      # Number of chunks after reranking
+
+  # Advanced features
+  enable_reranking: true
+  query_expansion: true
+  enable_hyde: true  # Hypothetical Document Embeddings
+  deduplicate: true
+  cache_embeddings: true
+
+  # Thresholds
+  semantic_threshold: 0.85
+  min_similarity: 0.95  # For deduplication
+
+  # Version
+  version: "1.0.0"
+
+# Local GGUF Configuration (optional)
+# Uncomment and configure to use llama.cpp instead of HuggingFace
+local_gguf:
+  enabled: false
+  # model_path: "/path/to/model.gguf"
+  # threads: 0  # 0 = auto-detect
+  # n_gpu_layers: 0  # >0 only if built with GPU support
+
+# Logging Configuration
+logging:
+  level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  file: "can_rag.log"
+  console: true
+
+# UI Configuration
+ui:
+  theme: "dark"
+  min_width: 1400
+  min_height: 900
+  font_family: "Segoe UI"
+  font_size: 10
+  answer_font_size: 14
+
+# Performance tuning
+performance:
+  batch_size: 16  # For embedding generation
+  max_workers: 4   # For parallel processing
+  cache_size: 1000 # Number of embeddings to cache

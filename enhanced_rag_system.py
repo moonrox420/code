@@ -190,7 +190,14 @@ class ChunkMetadata:
 class TextProcessor:
     def __init__(self, cfg: RagConfig):
         self.cfg = cfg
-        self._tiktoken_enc = tiktoken.get_encoding("cl100k_base") if HAS_TIKTOKEN else None
+        # Gracefully handle tiktoken initialization failures (network issues, etc.)
+        self._tiktoken_enc = None
+        if HAS_TIKTOKEN:
+            try:
+                self._tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+            except Exception:
+                # Fallback to word-based counting if tiktoken fails to initialize
+                pass
 
     def count_tokens(self, text: str) -> int:
         if self._tiktoken_enc is not None:
@@ -234,9 +241,10 @@ class TextProcessor:
             else:
                 if current_chunk:
                     chunk_text = " ".join(current_chunk)
-                    if self.count_tokens(chunk_text) >= self.cfg.min_chunk_size:
+                    chunk_tokens = self.count_tokens(chunk_text)
+                    if chunk_tokens >= self.cfg.min_chunk_size:
                         chunk_meta = self._create_chunk_metadata(
-                            chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), para_idx
+                            chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), para_idx, chunk_tokens
                         )
                         chunks.append((chunk_text, chunk_meta))
                 current_chunk = [paragraph]
@@ -245,9 +253,10 @@ class TextProcessor:
 
         if current_chunk:
             chunk_text = " ".join(current_chunk)
-            if self.count_tokens(chunk_text) >= self.cfg.min_chunk_size:
+            chunk_tokens = self.count_tokens(chunk_text)
+            if chunk_tokens >= self.cfg.min_chunk_size:
                 chunk_meta = self._create_chunk_metadata(
-                    chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), len(paragraphs) - 1
+                    chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), len(paragraphs) - 1, chunk_tokens
                 )
                 chunks.append((chunk_text, chunk_meta))
 
@@ -255,17 +264,20 @@ class TextProcessor:
 
     def _add_to_chunks(self, text: str, token_count: int, chunks: List, metadata: DocumentMetadata, position: int, start_pos: int):
         if token_count >= self.cfg.min_chunk_size:
-            chunk_meta = self._create_chunk_metadata(text, metadata, start_pos, start_pos + len(text), position)
+            chunk_meta = self._create_chunk_metadata(text, metadata, start_pos, start_pos + len(text), position, token_count)
             chunks.append((text, chunk_meta))
 
-    def _create_chunk_metadata(self, text: str, doc_meta: DocumentMetadata, start_pos: int, end_pos: int, para_idx: int) -> ChunkMetadata:
+    def _create_chunk_metadata(self, text: str, doc_meta: DocumentMetadata, start_pos: int, end_pos: int, para_idx: int, token_count: Optional[int] = None) -> ChunkMetadata:
         chunk_id = hashlib.md5(f"{doc_meta.md5_hash}:{start_pos}:{end_pos}".encode()).hexdigest()
+        # Reuse token_count if already computed to avoid redundant tokenization
+        if token_count is None:
+            token_count = self.count_tokens(text)
         return ChunkMetadata(
             chunk_id=chunk_id,
             document_id=doc_meta.md5_hash,
             start_position=start_pos,
             end_position=end_pos,
-            token_count=self.count_tokens(text),
+            token_count=token_count,
             sentence_count=len(self.split_sentences(text)),
             paragraph_id=para_idx,
             page_number=None,
@@ -297,6 +309,7 @@ class TextProcessor:
 class EnhancedDocumentIndexer:
     def __init__(self, embed_model: SentenceTransformer, cfg: RagConfig):
         self.embed = embed_model
+        # Extract embedding model name once at initialization
         _mcd = getattr(embed_model, "_model_card_data", None)
         self._embed_model_name: str = (
             getattr(_mcd, "model_name", None) or cfg.version
@@ -470,19 +483,28 @@ class EnhancedDocumentIndexer:
         if len(pass1_chunks) < 2:
             return pass1_chunks, np.array(pass1_embs)
 
-        # Pass 2: near-duplicate embedding similarity (O(n²) but on already-reduced set)
-        embs_arr = np.array(pass1_embs)
-        # Compute full similarity matrix at once (vectorised — much faster than per-pair loop)
+        # Pass 2: near-duplicate embedding similarity using vectorized operations
+        embs_arr = np.array(pass1_embs, dtype=np.float32)
+        # NOTE: Embeddings are typically encoded with normalize_embeddings=True upstream,
+        # so this L2-normalization is usually a no-op. We still normalize here as a
+        # defensive check to ensure cosine similarity is well-defined even if callers
+        # change the embedding configuration in the future.
+        norms = np.linalg.norm(embs_arr, axis=1, keepdims=True)
+        embs_arr = embs_arr / np.maximum(norms, 1e-8)
+
+        # Compute similarity matrix using batched matrix multiplication (much faster than loop)
         sim_matrix = embs_arr @ embs_arr.T
         np.fill_diagonal(sim_matrix, 0.0)
 
+        # Vectorized deduplication: mark duplicates based on similarity threshold
         unique_mask = np.ones(len(pass1_chunks), dtype=bool)
         for i in range(len(pass1_chunks)):
             if not unique_mask[i]:
                 continue
-            for j in range(i + 1, len(pass1_chunks)):
-                if unique_mask[j] and sim_matrix[i, j] > self.cfg.min_similarity:
-                    unique_mask[j] = False
+            # Find all duplicates of i in one operation
+            duplicates = np.where((unique_mask) & (sim_matrix[i] > self.cfg.min_similarity))[0]
+            # Mark later duplicates as non-unique (keep first occurrence)
+            unique_mask[duplicates[duplicates > i]] = False
 
         unique_chunks = [c for c, keep in zip(pass1_chunks, unique_mask) if keep]
         unique_embs = embs_arr[unique_mask]
@@ -534,9 +556,7 @@ class EnhancedDocumentIndexer:
         metadata = {
             "version": self.cfg.version,
             "created": datetime.now().isoformat(),
-            "embedding_model": getattr(
-                getattr(self.embed, "_model_card_data", None), "model_name", None
-            ) or self.cfg.version,
+            "embedding_model": self._embed_model_name,
             "total_chunks": len(all_chunks),
             "total_documents": len(processed_files),
             "dimension": dimension,
