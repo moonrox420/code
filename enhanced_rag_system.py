@@ -30,14 +30,18 @@ import qdarkstyle
 # Env toggles and runtime settings
 LOCAL_GGUF_MODEL = os.getenv("LOCAL_GGUF_MODEL", "").strip()
 LLAMA_CPP_THREADS = int(os.getenv("LLAMA_CPP_THREADS", "0"))  # 0 = auto
-LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0"))  # >0 only if built with GPU
+LLAMA_CPP_N_GPU_LAYERS = int(
+    os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0")
+)  # >0 only if built with GPU
 HF_LLM_NAME_DEFAULT = "mistralai/Mistral-7B-Instruct-v0.2"  # public default
+
 
 def _resolve_threads() -> int:
     """Return LLAMA_CPP_THREADS if >0, else os.cpu_count() (fallback 4)."""
     if LLAMA_CPP_THREADS > 0:
         return LLAMA_CPP_THREADS
     return os.cpu_count() or 4
+
 
 HF_LLM_NAME = os.getenv("MCFG_LLM", HF_LLM_NAME_DEFAULT)
 
@@ -109,12 +113,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 
+
 # ---------------- Enhanced Configuration ---------------- #
 class ChunkStrategy(Enum):
     SEMANTIC = "semantic"
     FIXED = "fixed"
     SLIDING = "sliding"
     HYBRID = "hybrid"
+
 
 @dataclass
 class ModelConfig:
@@ -131,6 +137,7 @@ class ModelConfig:
     do_sample: bool = True
     num_beams: int = 1
     use_local_gguf: bool = bool(LOCAL_GGUF_MODEL)
+
 
 @dataclass
 class RagConfig:
@@ -154,6 +161,7 @@ class RagConfig:
     cache_embeddings: bool = True
     version: str = "1.0.0"
 
+
 @dataclass
 class DocumentMetadata:
     source_path: str
@@ -169,6 +177,7 @@ class DocumentMetadata:
     author: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
+
 @dataclass
 class ChunkMetadata:
     chunk_id: str
@@ -183,11 +192,14 @@ class ChunkMetadata:
     keywords: List[str] = field(default_factory=list)
     embedding_model: str = ""
 
+
 # ---------------- Enhanced Text Processing ---------------- #
 class TextProcessor:
     def __init__(self, cfg: RagConfig):
         self.cfg = cfg
-        self._tiktoken_enc = tiktoken.get_encoding("cl100k_base") if HAS_TIKTOKEN else None
+        self._tiktoken_enc = (
+            tiktoken.get_encoding("cl100k_base") if HAS_TIKTOKEN else None
+        )
 
     def count_tokens(self, text: str) -> int:
         if self._tiktoken_enc is not None:
@@ -223,7 +235,9 @@ class TextProcessor:
                 sentences = self.split_sentences(paragraph)
                 for sent in sentences:
                     sent_tokens = self.count_tokens(sent)
-                    self._add_to_chunks(sent, sent_tokens, chunks, metadata, para_idx, chunk_start)
+                    self._add_to_chunks(
+                        sent, sent_tokens, chunks, metadata, para_idx, chunk_start
+                    )
                     chunk_start += len(sent)
                 continue
 
@@ -283,7 +297,9 @@ class TextProcessor:
         end_pos: int,
         para_idx: int,
     ) -> ChunkMetadata:
-        chunk_id = hashlib.md5(f"{doc_meta.md5_hash}:{start_pos}:{end_pos}".encode()).hexdigest()
+        chunk_id = hashlib.md5(
+            f"{doc_meta.md5_hash}:{start_pos}:{end_pos}".encode()
+        ).hexdigest()
         return ChunkMetadata(
             chunk_id=chunk_id,
             document_id=doc_meta.md5_hash,
@@ -333,6 +349,7 @@ class TextProcessor:
             if w[0] not in stopwords
         ][:max_keywords]
         return [k[0] for k in keywords]
+
 
 # ---------------- Enhanced Document Indexer ---------------- #
 class EnhancedDocumentIndexer:
@@ -420,7 +437,9 @@ class EnhancedDocumentIndexer:
                 doc.close()
                 return "\n\n".join(text_parts), page_count, title, author
             except Exception as e:
-                logger.warning(f"PyMuPDF failed for {path}, falling back to PyPDF2: {e}")
+                logger.warning(
+                    f"PyMuPDF failed for {path}, falling back to PyPDF2: {e}"
+                )
                 text_parts.clear()
 
         # Fallback: PyPDF2
@@ -536,7 +555,18 @@ class EnhancedDocumentIndexer:
             f
             for f in files
             if Path(f).suffix.lower()
-            in [".pdf", ".txt", ".md", ".html", ".htm", ".docx", ".py", ".js", ".java", ".cpp"]
+            in [
+                ".pdf",
+                ".txt",
+                ".md",
+                ".html",
+                ".htm",
+                ".docx",
+                ".py",
+                ".js",
+                ".java",
+                ".cpp",
+            ]
         ]
         all_chunks, all_meta, processed_files, failed_files = [], [], [], []
         total_files = len(files)
@@ -544,11 +574,16 @@ class EnhancedDocumentIndexer:
         for file_index, file_path in enumerate(files):
             try:
                 text, doc_metadata = self._read_file(file_path)
-                chunks_with_meta = self.text_processor.semantic_chunking(text, doc_metadata)
+                chunks_with_meta = self.text_processor.semantic_chunking(
+                    text, doc_metadata
+                )
                 for chunk_text, chunk_meta in chunks_with_meta:
                     all_chunks.append(chunk_text)
                     all_meta.append(
-                        {"chunk_meta": chunk_meta.__dict__, "doc_meta": doc_metadata.__dict__}
+                        {
+                            "chunk_meta": chunk_meta.__dict__,
+                            "doc_meta": doc_metadata.__dict__,
+                        }
                     )
                 processed_files.append(
                     {
@@ -565,7 +600,11 @@ class EnhancedDocumentIndexer:
         if not all_chunks:
             if progress_cb:
                 progress_cb(0)
-            return {"total_chunks": 0, "processed": processed_files, "failed": failed_files}
+            return {
+                "total_chunks": 0,
+                "processed": processed_files,
+                "failed": failed_files,
+            }
 
         embeddings = self.embed.encode(
             all_chunks,
@@ -709,7 +748,11 @@ class EnhancedDocumentIndexer:
             for score, idx in zip(scores[0], indices[0]):
                 if idx < len(chunks) and idx not in seen_chunks:
                     chunk_text = chunks[idx]
-                    chunk_meta = metadata["chunks"][idx] if idx < len(metadata["chunks"]) else {{}}
+                    chunk_meta = (
+                        metadata["chunks"][idx]
+                        if idx < len(metadata["chunks"])
+                        else {{}}
+                    )
                     all_results.append((chunk_text, chunk_meta, float(score)))
                     seen_chunks.add(idx)
 
@@ -718,22 +761,27 @@ class EnhancedDocumentIndexer:
 
     def _expand_query(self, query: str) -> List[str]:
         expansions = []
-        if not query.lower().startswith(("how", "what", "why", "when", "where", "which")):
+        if not query.lower().startswith(
+            ("how", "what", "why", "when", "where", "which")
+        ):
             expansions.append(f"how to {query}")
         expansions.append(f"explain {query}")
         expansions.append(f"examples of {query}")
-        tech_terms = {{
-            "code": ["implementation", "program", "algorithm"],
-            "error": ["bug", "issue", "problem", "exception"],
-            "function": ["method", "procedure", "routine"],
-            "class": ["type", "object", "structure"],
-            "api": ["interface", "endpoint", "service"],
-        }}
+        tech_terms = {
+            {
+                "code": ["implementation", "program", "algorithm"],
+                "error": ["bug", "issue", "problem", "exception"],
+                "function": ["method", "procedure", "routine"],
+                "class": ["type", "object", "structure"],
+                "api": ["interface", "endpoint", "service"],
+            }
+        }
         for term, alternatives in tech_terms.items():
             if term in query.lower():
                 for alt in alternatives:
                     expansions.append(query.lower().replace(term, alt))
         return list(set(expansions))
+
 
 # ---------------- Enhanced RAG Generator ---------------- #
 class EnhancedRagGenerator:
@@ -750,14 +798,18 @@ class EnhancedRagGenerator:
             try:
                 self.reranker = CrossEncoder(mcfg.reranker_name, device=mcfg.device)
             except Exception as e:
-                logger.warning(f"Failed to load reranker: {e}. Continuing without reranking.")
+                logger.warning(
+                    f"Failed to load reranker: {e}. Continuing without reranking."
+                )
                 self.rcfg.enable_reranking = False
 
     def _load_models(self):
         logger.info("Loading models...")
         # Embeddings
         try:
-            self.embed_model = SentenceTransformer(self.mcfg.embed_name, device=self.mcfg.device)
+            self.embed_model = SentenceTransformer(
+                self.mcfg.embed_name, device=self.mcfg.device
+            )
             logger.info(f"Loaded embedding model: {self.mcfg.embed_name}")
         except Exception as e:
             logger.warning(
@@ -774,7 +826,9 @@ class EnhancedRagGenerator:
                     "llama-cpp-python not available while LOCAL_GGUF_MODEL is set."
                 )
             if not os.path.isfile(LOCAL_GGUF_MODEL):
-                raise FileNotFoundError(f"LOCAL_GGUF_MODEL path not found: {LOCAL_GGUF_MODEL}")
+                raise FileNotFoundError(
+                    f"LOCAL_GGUF_MODEL path not found: {LOCAL_GGUF_MODEL}"
+                )
             threads = _resolve_threads()
             logger.info(
                 f"Using llama.cpp with threads={{threads}}, n_gpu_layers={{LLAMA_CPP_N_GPU_LAYERS}}, "
@@ -794,7 +848,9 @@ class EnhancedRagGenerator:
             return  # short-circuits HF download
 
         # HF Transformers path (default)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.mcfg.llm_name, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.mcfg.llm_name, trust_remote_code=True
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -806,10 +862,19 @@ class EnhancedRagGenerator:
         )
         logger.info(f"Loaded LLM: {self.mcfg.llm_name}")
 
-    def ensure_index(self):
-        if not os.path.exists(self.rcfg.index_path):
-            logger.info("Index not found. Building new index...")
-            self.indexer.ingest()
+    def ensure_index(self) -> bool:
+        """Build the index if it doesn't exist. Returns True if index is ready, False if data/raw is empty."""
+        if os.path.exists(self.rcfg.index_path):
+            return True
+        logger.info("Index not found. Building new index...")
+        result = self.indexer.ingest()
+        if result.get("total_chunks", 0) == 0:
+            logger.warning(
+                "No documents found in '%s'. Add files to data/raw/ and rebuild the index.",
+                self.rcfg.raw_dir,
+            )
+            return False
+        return True
 
     def _rerank_results(
         self, query: str, results: List[Tuple[str, Dict, float]]
@@ -819,7 +884,10 @@ class EnhancedRagGenerator:
         pairs = [(query, r[0]) for r in results]
         scores = self.reranker.predict(pairs)
         reranked = sorted(
-            [(chunk, meta, float(score)) for (chunk, meta, _), score in zip(results, scores)],
+            [
+                (chunk, meta, float(score))
+                for (chunk, meta, _), score in zip(results, scores)
+            ],
             key=lambda x: x[2],
             reverse=True,
         )
@@ -850,7 +918,9 @@ class EnhancedRagGenerator:
             outputs[0][len(inputs.input_ids[0]) :], skip_special_tokens=True
         )
 
-    def build_precision_prompt(self, query: str, context: List[Tuple[str, Dict, float]]) -> str:
+    def build_precision_prompt(
+        self, query: str, context: List[Tuple[str, Dict, float]]
+    ) -> str:
         if not context:
             return f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nAnswer the following question based on your general knowledge:\n\nQuestion: {query}\n\nAnswer:"""
 
@@ -899,10 +969,44 @@ class EnhancedRagGenerator:
         if max_new_tokens is None:
             max_new_tokens = self.mcfg.max_new_tokens
 
-        self.ensure_index()
+        index_ready = self.ensure_index()
+        if not index_ready:
+            # No documents indexed yet — answer from LLM general knowledge only
+            prompt = self.build_precision_prompt(query, [])
+            if self.llama_cpp is not None:
+                return self._gguf_stream(prompt, max_new_tokens, temperature), []
+            streamer = TextIteratorStreamer(
+                self.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True,
+                timeout=300.0,
+            )
+            inputs = self.tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=4096
+            ).to(self.model.device)
+            gen_kwargs = dict(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=self.mcfg.top_p,
+                top_k=self.mcfg.top_k,
+                repetition_penalty=self.mcfg.repetition_penalty,
+                do_sample=self.mcfg.do_sample,
+                streamer=streamer,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+            thread = threading.Thread(
+                target=self.model.generate, kwargs=gen_kwargs, daemon=True
+            )
+            thread.start()
+            return streamer, []
 
         initial_results = self.indexer.retrieve(query, k=k * 2)
-        if self.rcfg.enable_hyde and len(initial_results) < k and self.model is not None:
+        if (
+            self.rcfg.enable_hyde
+            and len(initial_results) < k
+            and self.model is not None
+        ):
             try:
                 hyde_doc = self._generate_hyde(query)
                 hyde_results = self.indexer.retrieve(hyde_doc, k=k)
@@ -941,9 +1045,12 @@ class EnhancedRagGenerator:
             streamer=streamer,
             pad_token_id=self.tokenizer.eos_token_id,
         )
-        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
+        thread = threading.Thread(
+            target=self.model.generate, kwargs=gen_kwargs, daemon=True
+        )
         thread.start()
         return streamer, final_results
+
 
 # ---------------- Workers ---------------- #
 class AskWorker(QtCore.QThread):
@@ -951,7 +1058,14 @@ class AskWorker(QtCore.QThread):
     ctxSignal = QtCore.pyqtSignal(list)
     errorSignal = QtCore.pyqtSignal(str)
 
-    def __init__(self, rag: EnhancedRagGenerator, query: str, k: int, temperature: float, max_tokens: int):
+    def __init__(
+        self,
+        rag: EnhancedRagGenerator,
+        query: str,
+        k: int,
+        temperature: float,
+        max_tokens: int,
+    ):
         super().__init__()
         self.rag = rag
         self.query = query
@@ -976,6 +1090,7 @@ class AskWorker(QtCore.QThread):
     def stop(self):
         self._stop = True
 
+
 class IngestWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(int)
     done = QtCore.pyqtSignal(int)
@@ -991,6 +1106,7 @@ class IngestWorker(QtCore.QThread):
             self.done.emit(result.get("total_chunks", 0))
         except Exception as e:
             self.failed.emit(f"{{e}}\n{{traceback.format_exc()}}")
+
 
 # ---------------- UI ---------------- #
 class DropArea(QtWidgets.QLabel):
@@ -1013,6 +1129,7 @@ class DropArea(QtWidgets.QLabel):
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
         self.filesDropped.emit(paths)
 
+
 class EnhancedMainWindow(QtWidgets.QMainWindow):
     def __init__(self, rag: EnhancedRagGenerator):
         super().__init__()
@@ -1033,7 +1150,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self._tabs = QtWidgets.QTabWidget()
         self._tabs.addTab(self._build_chat_tab(), "Precision Chat")
         self._tabs.addTab(self._build_settings_tab(), "Advanced Settings")
-        self._analytics_tab_idx = self._tabs.addTab(self._build_analytics_tab(), "Analytics")
+        self._analytics_tab_idx = self._tabs.addTab(
+            self._build_analytics_tab(), "Analytics"
+        )
         self._tabs.addTab(self._build_about_tab(), "About")
         # Auto-refresh analytics when the tab is selected
         self._tabs.currentChanged.connect(self._on_tab_changed)
@@ -1081,7 +1200,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.k_slider.setValue(self.rag.rcfg.k_final)
         self.k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.top_k_label = QtWidgets.QLabel(f"Top‑K: {{self.k_slider.value()}}")
-        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {{val}}"))
+        self.k_slider.valueChanged.connect(
+            lambda val: self.top_k_label.setText(f"Top‑K: {{val}}")
+        )
 
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
@@ -1123,7 +1244,11 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.history_combo.setEditable(False)
         self.history_combo.setMinimumWidth(300)
         self.history_combo.currentTextChanged.connect(
-            lambda text: self.prompt_edit.setPlainText(text) if text else self.prompt_edit.clear()
+            lambda text: (
+                self.prompt_edit.setPlainText(text)
+                if text
+                else self.prompt_edit.clear()
+            )
         )
         history_row.addWidget(self.history_combo, stretch=1)
         v.addLayout(history_row)
@@ -1133,7 +1258,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
             "Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)"
         )
         self.prompt_edit.setMinimumHeight(80)
-        self.prompt_edit.keyPressEvent = self._wrap_enter(self.prompt_edit.keyPressEvent)
+        self.prompt_edit.keyPressEvent = self._wrap_enter(
+            self.prompt_edit.keyPressEvent
+        )
 
         ask_btn = QtWidgets.QPushButton("Ask")
         ask_btn.setStyleSheet("font-weight: 700; padding: 10px 16px;")
@@ -1193,7 +1320,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         folder_btn = QtWidgets.QPushButton("Open raw folder in OS")
         folder_btn.clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(
-                QtCore.QUrl.fromLocalFile(self.raw_dir_edit.text() or self.rag.rcfg.raw_dir)
+                QtCore.QUrl.fromLocalFile(
+                    self.raw_dir_edit.text() or self.rag.rcfg.raw_dir
+                )
             )
         )
         v.addWidget(folder_btn)
@@ -1288,7 +1417,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self._ingest_worker = IngestWorker(self.rag.indexer)
         self._ingest_worker.progress.connect(self.progress.setValue)
         self._ingest_worker.done.connect(self._ingest_done)
-        self._ingest_worker.failed.connect(lambda msg: self.status.showMessage(msg, 8000))
+        self._ingest_worker.failed.connect(
+            lambda msg: self.status.showMessage(msg, 8000)
+        )
         self._ingest_worker.start()
 
     def _ingest_done(self, count: int):
@@ -1321,7 +1452,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
             self.worker.stop()
             self.worker.wait(2000)
         # Add to history (avoid duplicates at top)
-        existing = [self.history_combo.itemText(i) for i in range(self.history_combo.count())]
+        existing = [
+            self.history_combo.itemText(i) for i in range(self.history_combo.count())
+        ]
         if query not in existing:
             self.history_combo.insertItem(0, query)
             if self.history_combo.count() > 50:
@@ -1356,8 +1489,10 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     def _on_ctx(self, ctx):
         cards = []
         for i, c in enumerate(ctx):
+            doc_meta = c[1].get("doc_meta", {}) if c[1] else {}
+            source = doc_meta.get("title", "unknown")
             cards.append(
-                f"[{{i+1}}] score={{c[2]:.3f}}\n{{c[0]}}\nsource: {{c[1].get('doc_meta', {}).get('title','unknown')}}\n"
+                f"[{i + 1}] score={c[2]:.3f}\n{c[0]}\nsource: {source}\n"
                 "----------------------------------------"
             )
         self.ctx_view.setPlainText("\n".join(cards))
@@ -1432,7 +1567,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
 
         Expected *setting_key* values: ``"query_expansion"``, ``"enable_reranking"``,
         ``"enable_hyde"`` — all are attributes of :class:`RagConfig`.
-        """  
+        """
         enabled = state == QtCore.Qt.Checked
         self.precision_settings[setting_key] = enabled
         setattr(self.rag.rcfg, setting_key, enabled)
@@ -1454,6 +1589,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_ingest_worker") and self._ingest_worker.isRunning():
             self._ingest_worker.wait(3000)
         event.accept()
+
 
 # ---------------- Entrypoint ---------------- #
 def main():
@@ -1483,6 +1619,7 @@ def main():
     win = EnhancedMainWindow(rag)
     win.show()
     sys.exit(app.exec_())
+
 
 if __name__ == "__main__":
     main()
