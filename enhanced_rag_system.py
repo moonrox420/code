@@ -33,13 +33,11 @@ LLAMA_CPP_THREADS = int(os.getenv("LLAMA_CPP_THREADS", "0"))  # 0 = auto
 LLAMA_CPP_N_GPU_LAYERS = int(os.getenv("LLAMA_CPP_N_GPU_LAYERS", "0"))  # >0 only if built with GPU
 HF_LLM_NAME_DEFAULT = "mistralai/Mistral-7B-Instruct-v0.2"  # public default
 
-
 def _resolve_threads() -> int:
     """Return LLAMA_CPP_THREADS if >0, else os.cpu_count() (fallback 4)."""
     if LLAMA_CPP_THREADS > 0:
         return LLAMA_CPP_THREADS
     return os.cpu_count() or 4
-
 
 HF_LLM_NAME = os.getenv("MCFG_LLM", HF_LLM_NAME_DEFAULT)
 
@@ -57,6 +55,7 @@ if LOCAL_GGUF_MODEL:
 # PyMuPDF — optional, preferred PDF backend (pip install PyMuPDF)
 try:
     import fitz  # type: ignore  # noqa: F401
+
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
@@ -65,6 +64,7 @@ except ImportError:
 # python-docx — DOCX parsing (pip install python-docx). NOT the broken 'docx' package.
 try:
     from docx import Document as DocxDocument  # type: ignore
+
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
@@ -74,6 +74,7 @@ except ImportError:
 try:
     import markdown  # type: ignore
     from bs4 import BeautifulSoup  # type: ignore
+
     HAS_MARKDOWN = True
 except ImportError:
     HAS_MARKDOWN = False
@@ -82,6 +83,7 @@ except ImportError:
 
 try:
     import html2text  # type: ignore
+
     HAS_HTML2TEXT = True
 except ImportError:
     HAS_HTML2TEXT = False
@@ -90,6 +92,7 @@ except ImportError:
 # Token counting — optional; falls back to word-count when absent
 try:
     import tiktoken  # type: ignore
+
     HAS_TIKTOKEN = True
 except ImportError:
     HAS_TIKTOKEN = False
@@ -106,14 +109,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 warnings.filterwarnings("ignore")
 
-
 # ---------------- Enhanced Configuration ---------------- #
 class ChunkStrategy(Enum):
     SEMANTIC = "semantic"
     FIXED = "fixed"
     SLIDING = "sliding"
     HYBRID = "hybrid"
-
 
 @dataclass
 class ModelConfig:
@@ -130,7 +131,6 @@ class ModelConfig:
     do_sample: bool = True
     num_beams: int = 1
     use_local_gguf: bool = bool(LOCAL_GGUF_MODEL)
-
 
 @dataclass
 class RagConfig:
@@ -154,7 +154,6 @@ class RagConfig:
     cache_embeddings: bool = True
     version: str = "1.0.0"
 
-
 @dataclass
 class DocumentMetadata:
     source_path: str
@@ -170,7 +169,6 @@ class DocumentMetadata:
     author: Optional[str] = None
     tags: List[str] = field(default_factory=list)
 
-
 @dataclass
 class ChunkMetadata:
     chunk_id: str
@@ -184,7 +182,6 @@ class ChunkMetadata:
     section_title: Optional[str] = None
     keywords: List[str] = field(default_factory=list)
     embedding_model: str = ""
-
 
 # ---------------- Enhanced Text Processing ---------------- #
 class TextProcessor:
@@ -212,7 +209,9 @@ class TextProcessor:
         paragraphs = re.split(r"\n\s*\n", text)
         return [p.strip() for p in paragraphs if p.strip()]
 
-    def semantic_chunking(self, text: str, metadata: DocumentMetadata) -> List[Tuple[str, ChunkMetadata]]:
+    def semantic_chunking(
+        self, text: str, metadata: DocumentMetadata
+    ) -> List[Tuple[str, ChunkMetadata]]:
         chunks = []
         paragraphs = self.split_paragraphs(text)
         current_chunk, current_tokens, chunk_start = [], 0, 0
@@ -236,7 +235,11 @@ class TextProcessor:
                     chunk_text = " ".join(current_chunk)
                     if self.count_tokens(chunk_text) >= self.cfg.min_chunk_size:
                         chunk_meta = self._create_chunk_metadata(
-                            chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), para_idx
+                            chunk_text,
+                            metadata,
+                            chunk_start,
+                            chunk_start + len(chunk_text),
+                            para_idx,
                         )
                         chunks.append((chunk_text, chunk_meta))
                 current_chunk = [paragraph]
@@ -247,18 +250,39 @@ class TextProcessor:
             chunk_text = " ".join(current_chunk)
             if self.count_tokens(chunk_text) >= self.cfg.min_chunk_size:
                 chunk_meta = self._create_chunk_metadata(
-                    chunk_text, metadata, chunk_start, chunk_start + len(chunk_text), len(paragraphs) - 1
+                    chunk_text,
+                    metadata,
+                    chunk_start,
+                    chunk_start + len(chunk_text),
+                    len(paragraphs) - 1,
                 )
                 chunks.append((chunk_text, chunk_meta))
 
         return chunks
 
-    def _add_to_chunks(self, text: str, token_count: int, chunks: List, metadata: DocumentMetadata, position: int, start_pos: int):
+    def _add_to_chunks(
+        self,
+        text: str,
+        token_count: int,
+        chunks: List,
+        metadata: DocumentMetadata,
+        position: int,
+        start_pos: int,
+    ):
         if token_count >= self.cfg.min_chunk_size:
-            chunk_meta = self._create_chunk_metadata(text, metadata, start_pos, start_pos + len(text), position)
+            chunk_meta = self._create_chunk_metadata(
+                text, metadata, start_pos, start_pos + len(text), position
+            )
             chunks.append((text, chunk_meta))
 
-    def _create_chunk_metadata(self, text: str, doc_meta: DocumentMetadata, start_pos: int, end_pos: int, para_idx: int) -> ChunkMetadata:
+    def _create_chunk_metadata(
+        self,
+        text: str,
+        doc_meta: DocumentMetadata,
+        start_pos: int,
+        end_pos: int,
+        para_idx: int,
+    ) -> ChunkMetadata:
         chunk_id = hashlib.md5(f"{doc_meta.md5_hash}:{start_pos}:{end_pos}".encode()).hexdigest()
         return ChunkMetadata(
             chunk_id=chunk_id,
@@ -288,19 +312,34 @@ class TextProcessor:
         freq: Dict[str, int] = {}
         for word in words:
             freq[word] = freq.get(word, 0) + 1
-        stopwords = {"this", "that", "with", "from", "have", "were", "they", "what", "when", "which", "would", "could", "should"}
-        keywords = [w for w in sorted(freq.items(), key=lambda x: x[1], reverse=True) if w[0] not in stopwords][:max_keywords]
+        stopwords = {
+            "this",
+            "that",
+            "with",
+            "from",
+            "have",
+            "were",
+            "they",
+            "what",
+            "when",
+            "which",
+            "would",
+            "could",
+            "should",
+        }
+        keywords = [
+            w
+            for w in sorted(freq.items(), key=lambda x: x[1], reverse=True)
+            if w[0] not in stopwords
+        ][:max_keywords]
         return [k[0] for k in keywords]
-
 
 # ---------------- Enhanced Document Indexer ---------------- #
 class EnhancedDocumentIndexer:
     def __init__(self, embed_model: SentenceTransformer, cfg: RagConfig):
         self.embed = embed_model
         _mcd = getattr(embed_model, "_model_card_data", None)
-        self._embed_model_name: str = (
-            getattr(_mcd, "model_name", None) or cfg.version
-        )
+        self._embed_model_name: str = getattr(_mcd, "model_name", None) or cfg.version
         self.cfg = cfg
         self.text_processor = TextProcessor(cfg)
         self.embedding_cache: Dict[str, np.ndarray] = {}
@@ -386,6 +425,7 @@ class EnhancedDocumentIndexer:
 
         # Fallback: PyPDF2
         from PyPDF2 import PdfReader
+
         with open(path, "rb") as f:
             reader = PdfReader(f)
             page_count = len(reader.pages)
@@ -453,7 +493,9 @@ class EnhancedDocumentIndexer:
                 break
         return list(set(tags))
 
-    def _deduplicate_chunks(self, chunks: List[Tuple[str, Any]], embeddings: np.ndarray) -> Tuple[List, np.ndarray]:
+    def _deduplicate_chunks(
+        self, chunks: List[Tuple[str, Any]], embeddings: np.ndarray
+    ) -> Tuple[List, np.ndarray]:
         if not self.cfg.deduplicate or len(chunks) < 2:
             return chunks, embeddings
 
@@ -490,7 +532,12 @@ class EnhancedDocumentIndexer:
 
     def ingest(self, progress_cb=None) -> Dict[str, Any]:
         files = glob.glob(os.path.join(self.cfg.raw_dir, "**", "*.*"), recursive=True)
-        files = [f for f in files if Path(f).suffix.lower() in [".pdf", ".txt", ".md", ".html", ".htm", ".docx", ".py", ".js", ".java", ".cpp"]]
+        files = [
+            f
+            for f in files
+            if Path(f).suffix.lower()
+            in [".pdf", ".txt", ".md", ".html", ".htm", ".docx", ".py", ".js", ".java", ".cpp"]
+        ]
         all_chunks, all_meta, processed_files, failed_files = [], [], [], []
         total_files = len(files)
 
@@ -500,8 +547,16 @@ class EnhancedDocumentIndexer:
                 chunks_with_meta = self.text_processor.semantic_chunking(text, doc_metadata)
                 for chunk_text, chunk_meta in chunks_with_meta:
                     all_chunks.append(chunk_text)
-                    all_meta.append({"chunk_meta": chunk_meta.__dict__, "doc_meta": doc_metadata.__dict__})
-                processed_files.append({"path": file_path, "chunks": len(chunks_with_meta), "metadata": doc_metadata.__dict__})
+                    all_meta.append(
+                        {"chunk_meta": chunk_meta.__dict__, "doc_meta": doc_metadata.__dict__}
+                    )
+                processed_files.append(
+                    {
+                        "path": file_path,
+                        "chunks": len(chunks_with_meta),
+                        "metadata": doc_metadata.__dict__,
+                    }
+                )
             except Exception as e:
                 failed_files.append({"path": file_path, "error": str(e)})
             if progress_cb:
@@ -512,14 +567,28 @@ class EnhancedDocumentIndexer:
                 progress_cb(0)
             return {"total_chunks": 0, "processed": processed_files, "failed": failed_files}
 
-        embeddings = self.embed.encode(all_chunks, batch_size=16, convert_to_numpy=True, show_progress_bar=False, normalize_embeddings=True)
+        embeddings = self.embed.encode(
+            all_chunks,
+            batch_size=16,
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            normalize_embeddings=True,
+        )
         if progress_cb:
             progress_cb(75)
 
         if self.cfg.deduplicate:
-            dedup_chunks, dedup_emb = self._deduplicate_chunks(list(zip(all_chunks, all_meta)), embeddings)
-            all_chunks, all_meta, embeddings = zip(*[(c, m, e) for (c, m), e in zip(dedup_chunks, dedup_emb)])
-            all_chunks, all_meta, embeddings = list(all_chunks), list(all_meta), np.array(embeddings)
+            dedup_chunks, dedup_emb = self._deduplicate_chunks(
+                list(zip(all_chunks, all_meta)), embeddings
+            )
+            all_chunks, all_meta, embeddings = zip(
+                *[(c, m, e) for (c, m), e in zip(dedup_chunks, dedup_emb)]
+            )
+            all_chunks, all_meta, embeddings = (
+                list(all_chunks),
+                list(all_meta),
+                np.array(embeddings),
+            )
 
         if self.cfg.cache_embeddings:
             for chunk_text, embedding in zip(all_chunks, embeddings):
@@ -536,7 +605,8 @@ class EnhancedDocumentIndexer:
             "created": datetime.now().isoformat(),
             "embedding_model": getattr(
                 getattr(self.embed, "_model_card_data", None), "model_name", None
-            ) or self.cfg.version,
+            )
+            or self.cfg.version,
             "total_chunks": len(all_chunks),
             "total_documents": len(processed_files),
             "dimension": dimension,
@@ -568,7 +638,11 @@ class EnhancedDocumentIndexer:
 
     def load(self) -> Tuple[faiss.Index, List[str], Dict]:
         # Return cached values if available (avoids disk I/O on every retrieve call)
-        if self._index_cache is not None and self._chunks_cache is not None and self._meta_cache is not None:
+        if (
+            self._index_cache is not None
+            and self._chunks_cache is not None
+            and self._meta_cache is not None
+        ):
             return self._index_cache, self._chunks_cache, self._meta_cache
 
         if not os.path.exists(self.cfg.index_path):
@@ -596,7 +670,9 @@ class EnhancedDocumentIndexer:
         self._chunks_cache = None
         self._meta_cache = None
 
-    def _dedup_results_by_text(self, results: List[Tuple[str, Any, float]]) -> List[Tuple[str, Any, float]]:
+    def _dedup_results_by_text(
+        self, results: List[Tuple[str, Any, float]]
+    ) -> List[Tuple[str, Any, float]]:
         """Deduplicate retrieval results by chunk text, preserving order.
 
         Each element of *results* is a ``(chunk_text, metadata, score)`` tuple.
@@ -610,7 +686,9 @@ class EnhancedDocumentIndexer:
                 unique_results.append(result)
         return unique_results
 
-    def retrieve(self, query: str, k: int = None, query_expansion: bool = None) -> List[Tuple[str, Dict, float]]:
+    def retrieve(
+        self, query: str, k: int = None, query_expansion: bool = None
+    ) -> List[Tuple[str, Dict, float]]:
         if k is None:
             k = self.cfg.k_retrieve
         if query_expansion is None:
@@ -624,12 +702,14 @@ class EnhancedDocumentIndexer:
         seen_chunks = set()
 
         for expanded_query in expanded_queries:
-            query_embedding = self.embed.encode([expanded_query], convert_to_numpy=True, normalize_embeddings=True)
+            query_embedding = self.embed.encode(
+                [expanded_query], convert_to_numpy=True, normalize_embeddings=True
+            )
             scores, indices = index.search(query_embedding, min(k * 2, len(chunks)))
             for score, idx in zip(scores[0], indices[0]):
                 if idx < len(chunks) and idx not in seen_chunks:
                     chunk_text = chunks[idx]
-                    chunk_meta = metadata["chunks"][idx] if idx < len(metadata["chunks"]) else {}
+                    chunk_meta = metadata["chunks"][idx] if idx < len(metadata["chunks"]) else {{}}
                     all_results.append((chunk_text, chunk_meta, float(score)))
                     seen_chunks.add(idx)
 
@@ -642,19 +722,18 @@ class EnhancedDocumentIndexer:
             expansions.append(f"how to {query}")
         expansions.append(f"explain {query}")
         expansions.append(f"examples of {query}")
-        tech_terms = {
+        tech_terms = {{
             "code": ["implementation", "program", "algorithm"],
             "error": ["bug", "issue", "problem", "exception"],
             "function": ["method", "procedure", "routine"],
             "class": ["type", "object", "structure"],
             "api": ["interface", "endpoint", "service"],
-        }
+        }}
         for term, alternatives in tech_terms.items():
             if term in query.lower():
                 for alt in alternatives:
                     expansions.append(query.lower().replace(term, alt))
         return list(set(expansions))
-
 
 # ---------------- Enhanced RAG Generator ---------------- #
 class EnhancedRagGenerator:
@@ -681,19 +760,25 @@ class EnhancedRagGenerator:
             self.embed_model = SentenceTransformer(self.mcfg.embed_name, device=self.mcfg.device)
             logger.info(f"Loaded embedding model: {self.mcfg.embed_name}")
         except Exception as e:
-            logger.warning(f"Primary embedding load failed: {e}, fallback to {self.mcfg.embed_fallback}")
-            self.embed_model = SentenceTransformer(self.mcfg.embed_fallback, device=self.mcfg.device)
+            logger.warning(
+                f"Primary embedding load failed: {e}, fallback to {self.mcfg.embed_fallback}"
+            )
+            self.embed_model = SentenceTransformer(
+                self.mcfg.embed_fallback, device=self.mcfg.device
+            )
 
         # Local GGUF path
         if self.mcfg.use_local_gguf and LOCAL_GGUF_MODEL:
             if not Llama:
-                raise ImportError("llama-cpp-python not available while LOCAL_GGUF_MODEL is set.")
+                raise ImportError(
+                    "llama-cpp-python not available while LOCAL_GGUF_MODEL is set."
+                )
             if not os.path.isfile(LOCAL_GGUF_MODEL):
                 raise FileNotFoundError(f"LOCAL_GGUF_MODEL path not found: {LOCAL_GGUF_MODEL}")
             threads = _resolve_threads()
             logger.info(
-                f"Using llama.cpp with threads={threads}, n_gpu_layers={LLAMA_CPP_N_GPU_LAYERS}, "
-                f"model={LOCAL_GGUF_MODEL}"
+                f"Using llama.cpp with threads={{threads}}, n_gpu_layers={{LLAMA_CPP_N_GPU_LAYERS}}, "
+                f"model={{LOCAL_GGUF_MODEL}}"
             )
             self.llama_cpp = Llama(
                 model_path=LOCAL_GGUF_MODEL,
@@ -726,7 +811,9 @@ class EnhancedRagGenerator:
             logger.info("Index not found. Building new index...")
             self.indexer.ingest()
 
-    def _rerank_results(self, query: str, results: List[Tuple[str, Dict, float]]) -> List[Tuple[str, Dict, float]]:
+    def _rerank_results(
+        self, query: str, results: List[Tuple[str, Dict, float]]
+    ) -> List[Tuple[str, Dict, float]]:
         if not self.reranker or not results:
             return results
         pairs = [(query, r[0]) for r in results]
@@ -736,17 +823,21 @@ class EnhancedRagGenerator:
             key=lambda x: x[2],
             reverse=True,
         )
-        return reranked[:self.rcfg.k_final]
+        return reranked[: self.rcfg.k_final]
 
     def _generate_hyde(self, query: str) -> str:
         if self.tokenizer is None or self.model is None:
-            raise RuntimeError("HyDE requires the HF Transformers backend (not supported with GGUF).")
+            raise RuntimeError(
+                "HyDE requires the HF Transformers backend (not supported with GGUF)."
+            )
         prompt = (
             "Based on the query below, generate a comprehensive answer that would contain "
             "the information needed to answer it.\n\n"
             f"Query: {query}\n\nHypothetical answer:"
         )
-        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=1024).to(self.model.device)
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=1024
+        ).to(self.model.device)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -755,55 +846,33 @@ class EnhancedRagGenerator:
                 do_sample=True,
                 pad_token_id=self.tokenizer.eos_token_id,
             )
-        return self.tokenizer.decode(outputs[0][len(inputs.input_ids[0]):], skip_special_tokens=True)
+        return self.tokenizer.decode(
+            outputs[0][len(inputs.input_ids[0]) :], skip_special_tokens=True
+        )
 
     def build_precision_prompt(self, query: str, context: List[Tuple[str, Dict, float]]) -> str:
         if not context:
-            return f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.
-Answer the following question based on your general knowledge:
-
-Question: {query}
-
-Answer:"""
+            return f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nAnswer the following question based on your general knowledge:\n\nQuestion: {query}\n\nAnswer:"""
 
         context_parts = []
         for i, (chunk, meta, score) in enumerate(context):
             source_info = ""
             if meta and "doc_meta" in meta:
                 doc_meta = meta["doc_meta"]
-                source_info = f"Source: {doc_meta.get('title', 'Unknown')}"
+                source_info = f"Source: {{doc_meta.get('title', 'Unknown')}}"
                 if "page_number" in meta.get("chunk_meta", {}):
-                    source_info += f" (Page {meta['chunk_meta']['page_number']})"
-            context_parts.append(f"[Context {i+1}, Relevance: {score:.3f}]\n{chunk}\n{source_info}\n")
+                    source_info += f" (Page {{meta['chunk_meta']['page_number']}})"
+            context_parts.append(
+                f"[Context {{i+1}}, Relevance: {{score:.3f}}]\n{{chunk}}\n{{source_info}}\n"
+            )
         context_text = "\n---\n".join(context_parts)
 
-        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.
-Your task is to answer the user's question with maximum precision and accuracy.
-
-CRITICAL INSTRUCTIONS:
-1. Use ONLY the provided context if it contains relevant information
-2. If context is insufficient or irrelevant, use your general knowledge but state this clearly
-3. Provide citations like [1], [2] when using specific information from context
-4. Be concise but complete - include all necessary details
-5. For code: provide production-ready, secure, efficient implementations
-6. For architecture: provide comprehensive designs with trade-offs
-7. Include confidence estimates for your answers
-
-CONTEXT:
-{context_text}
-
-QUESTION: {query}
-
-STRUCTURE YOUR ANSWER:
-1. Summary
-2. Main Answer (with citations)
-3. Confidence (High/Medium/Low)
-4. Additional Notes
-
-ANSWER:"""
+        prompt = f"""You are CAN (Code Anything Now), an elite uncensored AI engineer.\nYour task is to answer the user's question with maximum precision and accuracy.\n\nCRITICAL INSTRUCTIONS:\n1. Use ONLY the provided context if it contains relevant information\n2. If context is insufficient or irrelevant, use your general knowledge but state this clearly\n3. Provide citations like [1], [2] when using specific information from context\n4. Be concise but complete - include all necessary details\n5. For code: provide production-ready, secure, efficient implementations\n6. For architecture: provide comprehensive designs with trade-offs\n7. Include confidence estimates for your answers\n\nCONTEXT:\n{{context_text}}\n\nQUESTION: {query}\n\nSTRUCTURE YOUR ANSWER:\n1. Summary\n2. Main Answer (with citations)\n3. Confidence (High/Medium/Low)\n4. Additional Notes\n\nANSWER:"""
         return prompt
 
-    def _gguf_stream(self, prompt: str, max_new_tokens: int, temperature: float) -> Iterable[str]:
+    def _gguf_stream(
+        self, prompt: str, max_new_tokens: int, temperature: float
+    ) -> Iterable[str]:
         """Streaming tokens from llama.cpp backend."""
         if not self.llama_cpp:
             raise RuntimeError("LLM backend not initialized for GGUF.")
@@ -816,7 +885,13 @@ ANSWER:"""
         ):
             yield out["choices"][0]["text"]
 
-    def generate_stream(self, query: str, k: int = None, temperature: float = None, max_new_tokens: int = None):
+    def generate_stream(
+        self,
+        query: str,
+        k: int = None,
+        temperature: float = None,
+        max_new_tokens: int = None,
+    ):
         if k is None:
             k = self.rcfg.k_retrieve
         if temperature is None:
@@ -831,7 +906,9 @@ ANSWER:"""
             try:
                 hyde_doc = self._generate_hyde(query)
                 hyde_results = self.indexer.retrieve(hyde_doc, k=k)
-                initial_results = self.indexer._dedup_results_by_text(initial_results + hyde_results)[:k * 2]
+                initial_results = self.indexer._dedup_results_by_text(
+                    initial_results + hyde_results
+                )[: k * 2]
             except Exception as e:
                 logger.warning(f"HyDE failed: {e}")
 
@@ -847,8 +924,12 @@ ANSWER:"""
             return self._gguf_stream(prompt, max_new_tokens, temperature), final_results
 
         # HF path
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300.0)
-        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096).to(self.model.device)
+        streamer = TextIteratorStreamer(
+            self.tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=300.0
+        )
+        inputs = self.tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=4096
+        ).to(self.model.device)
         gen_kwargs = dict(
             **inputs,
             max_new_tokens=max_new_tokens,
@@ -863,7 +944,6 @@ ANSWER:"""
         thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs, daemon=True)
         thread.start()
         return streamer, final_results
-
 
 # ---------------- Workers ---------------- #
 class AskWorker(QtCore.QThread):
@@ -882,18 +962,19 @@ class AskWorker(QtCore.QThread):
 
     def run(self):
         try:
-            streamer, ctx = self.rag.generate_stream(self.query, self.k, self.temperature, self.max_tokens)
+            streamer, ctx = self.rag.generate_stream(
+                self.query, self.k, self.temperature, self.max_tokens
+            )
             self.ctxSignal.emit(ctx)
             for token in streamer:
                 if self._stop:
                     break
                 self.tokenSignal.emit(token)
         except Exception as e:
-            self.errorSignal.emit(f"{e}\n{traceback.format_exc()}")
+            self.errorSignal.emit(f"{{e}}\n{{traceback.format_exc()}}")
 
     def stop(self):
         self._stop = True
-
 
 class IngestWorker(QtCore.QThread):
     progress = QtCore.pyqtSignal(int)
@@ -909,8 +990,7 @@ class IngestWorker(QtCore.QThread):
             result = self.indexer.ingest(progress_cb=self.progress.emit)
             self.done.emit(result.get("total_chunks", 0))
         except Exception as e:
-            self.failed.emit(f"{e}\n{traceback.format_exc()}")
-
+            self.failed.emit(f"{{e}}\n{{traceback.format_exc()}}")
 
 # ---------------- UI ---------------- #
 class DropArea(QtWidgets.QLabel):
@@ -932,7 +1012,6 @@ class DropArea(QtWidgets.QLabel):
     def dropEvent(self, event):
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
         self.filesDropped.emit(paths)
-
 
 class EnhancedMainWindow(QtWidgets.QMainWindow):
     def __init__(self, rag: EnhancedRagGenerator):
@@ -985,7 +1064,13 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.confidence_cb.setChecked(self.precision_settings["show_confidence"])
         self.citations_cb = QtWidgets.QCheckBox("Show Citations")
         self.citations_cb.setChecked(self.precision_settings["show_citations"])
-        for widget in [self.expansion_cb, self.rerank_cb, self.hyde_cb, self.confidence_cb, self.citations_cb]:
+        for widget in [
+            self.expansion_cb,
+            self.rerank_cb,
+            self.hyde_cb,
+            self.confidence_cb,
+            self.citations_cb,
+        ]:
             precision_panel.addWidget(widget)
         precision_panel.addStretch()
         v.addLayout(precision_panel)
@@ -995,8 +1080,8 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.k_slider.setRange(1, 20)
         self.k_slider.setValue(self.rag.rcfg.k_final)
         self.k_slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
-        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {self.k_slider.value()}")
-        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {val}"))
+        self.top_k_label = QtWidgets.QLabel(f"Top‑K: {{self.k_slider.value()}}")
+        self.k_slider.valueChanged.connect(lambda val: self.top_k_label.setText(f"Top‑K: {{val}}"))
 
         self.temp_spin = QtWidgets.QDoubleSpinBox()
         self.temp_spin.setRange(0.1, 1.5)
@@ -1044,7 +1129,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         v.addLayout(history_row)
 
         self.prompt_edit = QtWidgets.QTextEdit()
-        self.prompt_edit.setPlaceholderText("Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)")
+        self.prompt_edit.setPlaceholderText(
+            "Ask for code, refactors, architecture plans… (Ctrl/Cmd+Enter to send)"
+        )
         self.prompt_edit.setMinimumHeight(80)
         self.prompt_edit.keyPressEvent = self._wrap_enter(self.prompt_edit.keyPressEvent)
 
@@ -1104,9 +1191,11 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         v.addWidget(apply_btn)
 
         folder_btn = QtWidgets.QPushButton("Open raw folder in OS")
-        folder_btn.clicked.connect(lambda: QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(self.raw_dir_edit.text() or self.rag.rcfg.raw_dir)
-        ))
+        folder_btn.clicked.connect(
+            lambda: QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(self.raw_dir_edit.text() or self.rag.rcfg.raw_dir)
+            )
+        )
         v.addWidget(folder_btn)
 
         save_chat_btn = QtWidgets.QPushButton("Save Chat History")
@@ -1153,10 +1242,14 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     # ---- Helpers & Handlers ----
     def _wrap_enter(self, orig_keypress):
         def handler(event):
-            if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if (event.modifiers() & QtCore.Qt.ControlModifier) and event.key() in (
+                QtCore.Qt.Key_Return,
+                QtCore.Qt.Key_Enter,
+            ):
                 self.handle_ask()
             else:
                 orig_keypress(event)
+
         return handler
 
     def handle_drop(self, paths: List[str]):
@@ -1201,7 +1294,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
     def _ingest_done(self, count: int):
         self.progress.setValue(100)
         self.progress.close()
-        self.status.showMessage(f"Indexed {count} chunks.", 6000)
+        self.status.showMessage(f"Indexed {{count}} chunks.", 6000)
 
     def clear_chat(self):
         self.answer_view.clear()
@@ -1212,7 +1305,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.status.showMessage("Answer copied.", 3000)
 
     def export_answer(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Export Answer", "answer.md", "Markdown (*.md)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Answer", "answer.md", "Markdown (*.md)"
+        )
         if path:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.answer_view.toPlainText())
@@ -1262,7 +1357,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         cards = []
         for i, c in enumerate(ctx):
             cards.append(
-                f"[{i+1}] score={c[2]:.3f}\n{c[0]}\nsource: {c[1].get('doc_meta', {}).get('title','unknown')}\n"
+                f"[{{i+1}}] score={{c[2]:.3f}}\n{{c[0]}}\nsource: {{c[1].get('doc_meta', {}).get('title','unknown')}}\n"
                 "----------------------------------------"
             )
         self.ctx_view.setPlainText("\n".join(cards))
@@ -1272,14 +1367,25 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         self.answer_view.setPlainText(msg)
 
     def save_chat(self):
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save Chat", "chat.json", "JSON (*.json)")
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Chat", "chat.json", "JSON (*.json)"
+        )
         if path:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"answer": self.answer_view.toPlainText(), "context": self.ctx_view.toPlainText()}, f, indent=2)
+                json.dump(
+                    {
+                        "answer": self.answer_view.toPlainText(),
+                        "context": self.ctx_view.toPlainText(),
+                    },
+                    f,
+                    indent=2,
+                )
             self.status.showMessage("Chat saved.", 4000)
 
     def load_chat(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Chat", "", "JSON (*.json)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Chat", "", "JSON (*.json)"
+        )
         if path:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1293,26 +1399,30 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
                 metadata = json.load(f)
             metrics = [
                 "=== PRECISION RAG ANALYTICS ===",
-                f"Version: {metadata.get('version', 'N/A')}",
-                f"Created: {metadata.get('created', 'N/A')}",
-                f"Embedding Model: {metadata.get('embedding_model', 'N/A')}",
-                f"Total Documents: {metadata.get('total_documents', 0)}",
-                f"Total Chunks: {metadata.get('total_chunks', 0)}",
-                f"Index Dimension: {metadata.get('dimension', 0)}",
+                f"Version: {{metadata.get('version', 'N/A')}}",
+                f"Created: {{metadata.get('created', 'N/A')}}",
+                f"Embedding Model: {{metadata.get('embedding_model', 'N/A')}}",
+                f"Total Documents: {{metadata.get('total_documents', 0)}}",
+                f"Total Chunks: {{metadata.get('total_chunks', 0)}}",
+                f"Index Dimension: {{metadata.get('dimension', 0)}}",
                 "",
                 "=== PRECISION SETTINGS ===",
-                f"Query Expansion: {self.precision_settings['query_expansion']}",
-                f"Reranking: {self.precision_settings['enable_reranking']}",
-                f"HyDE: {self.precision_settings['enable_hyde']}",
-                f"Chunk Strategy: {self.rag.rcfg.chunk_strategy.value}",
-                f"Deduplication: {self.rag.rcfg.deduplicate}",
+                f"Query Expansion: {{self.precision_settings['query_expansion']}}",
+                f"Reranking: {{self.precision_settings['enable_reranking']}}",
+                f"HyDE: {{self.precision_settings['enable_hyde']}}",
+                f"Chunk Strategy: {{self.rag.rcfg.chunk_strategy.value}}",
+                f"Deduplication: {{self.rag.rcfg.deduplicate}}",
                 "",
                 "=== FILE STATISTICS ===",
             ]
             for file_info in metadata.get("processed_files", [])[:10]:
-                metrics.append(f"• {Path(file_info['path']).name}: {file_info.get('chunks', 0)} chunks")
+                metrics.append(
+                    f"• {{Path(file_info['path']).name}}: {{file_info.get('chunks', 0)}} chunks"
+                )
             if len(metadata.get("processed_files", [])) > 10:
-                metrics.append(f"... and {len(metadata['processed_files']) - 10} more files")
+                metrics.append(
+                    f"... and {{len(metadata['processed_files']) - 10}} more files"
+                )
             self.metrics_text.setPlainText("\n".join(metrics))
         except Exception as e:
             self.metrics_text.setPlainText(f"Error loading analytics: {e}")
@@ -1322,7 +1432,7 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
 
         Expected *setting_key* values: ``"query_expansion"``, ``"enable_reranking"``,
         ``"enable_hyde"`` — all are attributes of :class:`RagConfig`.
-        """
+        """  
         enabled = state == QtCore.Qt.Checked
         self.precision_settings[setting_key] = enabled
         setattr(self.rag.rcfg, setting_key, enabled)
@@ -1344,7 +1454,6 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "_ingest_worker") and self._ingest_worker.isRunning():
             self._ingest_worker.wait(3000)
         event.accept()
-
 
 # ---------------- Entrypoint ---------------- #
 def main():
@@ -1374,7 +1483,6 @@ def main():
     win = EnhancedMainWindow(rag)
     win.show()
     sys.exit(app.exec_())
-
 
 if __name__ == "__main__":
     main()
