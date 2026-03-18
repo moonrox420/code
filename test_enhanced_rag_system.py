@@ -23,14 +23,32 @@ for _mod in (
     "transformers",
     "sentence_transformers",
     "qdarkstyle",
-    "PyQt5",
-    "PyQt5.QtCore",
-    "PyQt5.QtGui",
-    "PyQt5.QtWidgets",
     "PyPDF2",
 ):
     if _mod not in sys.modules:
         sys.modules[_mod] = types.ModuleType(_mod)
+
+# Stub PyQt5 as a package with proper submodule attributes so that
+# ``from PyQt5 import QtCore, QtGui, QtWidgets`` resolves correctly.
+for _qt_sub in ("PyQt5.QtCore", "PyQt5.QtGui", "PyQt5.QtWidgets"):
+    if _qt_sub not in sys.modules:
+        sys.modules[_qt_sub] = types.ModuleType(_qt_sub)
+
+if "PyQt5" not in sys.modules:
+    _pyqt5 = types.ModuleType("PyQt5")
+    _pyqt5.__path__ = []  # type: ignore[attr-defined]  # mark as package
+    sys.modules["PyQt5"] = _pyqt5
+else:
+    _pyqt5 = sys.modules["PyQt5"]
+    if not hasattr(_pyqt5, "__path__"):
+        _pyqt5.__path__ = []  # type: ignore[attr-defined]
+
+# Attach submodule stubs as attributes on the PyQt5 parent module so that
+# ``from PyQt5 import QtCore`` works (Python resolves the attribute, not just
+# the sys.modules entry).
+_pyqt5.QtCore = sys.modules["PyQt5.QtCore"]  # type: ignore[attr-defined]
+_pyqt5.QtGui = sys.modules["PyQt5.QtGui"]  # type: ignore[attr-defined]
+_pyqt5.QtWidgets = sys.modules["PyQt5.QtWidgets"]  # type: ignore[attr-defined]
 
 # Stub torch.cuda.is_available so ModelConfig default device resolves cleanly.
 _torch_stub = sys.modules["torch"]
@@ -61,15 +79,20 @@ _faiss_stub.read_index = MagicMock()  # type: ignore[attr-defined]
 _faiss_stub.write_index = MagicMock()  # type: ignore[attr-defined]
 
 # Stub PyQt5 sub-modules used at module level.
+# Use lightweight dummy classes (not MagicMock instances) for types that the
+# production code subclasses (QThread, QMainWindow, QLabel, etc.) so that
+# ``class AskWorker(QtCore.QThread)`` and similar declarations don't fail.
 for _qt_sub in ("PyQt5.QtCore", "PyQt5.QtGui", "PyQt5.QtWidgets"):
     _m = sys.modules[_qt_sub]
-    _m.QThread = MagicMock()  # type: ignore[attr-defined]
+    _m.QThread = type("QThread", (), {})  # type: ignore[attr-defined]
     _m.pyqtSignal = MagicMock(return_value=MagicMock())  # type: ignore[attr-defined]
     _m.Qt = MagicMock()  # type: ignore[attr-defined]
-    _m.QMainWindow = MagicMock()  # type: ignore[attr-defined]
-    _m.QLabel = MagicMock()  # type: ignore[attr-defined]
+    _m.QMainWindow = type("QMainWindow", (), {})  # type: ignore[attr-defined]
+    _m.QLabel = type("QLabel", (), {})  # type: ignore[attr-defined]
     _m.QTextCursor = MagicMock()  # type: ignore[attr-defined]
     _m.QFont = MagicMock()  # type: ignore[attr-defined]
+    _m.QApplication = type("QApplication", (), {})  # type: ignore[attr-defined]
+    _m.QWidget = type("QWidget", (), {})  # type: ignore[attr-defined]
 
 import enhanced_rag_system as ers  # noqa: E402  (import after stubs)
 
