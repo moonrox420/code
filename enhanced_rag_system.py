@@ -40,7 +40,10 @@ def _resolve_threads() -> int:
     """Return LLAMA_CPP_THREADS if >0, else os.cpu_count() (fallback 4)."""
     if LLAMA_CPP_THREADS > 0:
         return LLAMA_CPP_THREADS
-    return os.cpu_count() or 4
+    try:
+        return os.cpu_count() or 4
+    except Exception:
+        return 4
 
 
 HF_LLM_NAME = os.getenv("MCFG_LLM", HF_LLM_NAME_DEFAULT)
