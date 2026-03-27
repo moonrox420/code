@@ -734,7 +734,11 @@ class EnhancedDocumentIndexer:
         if query_expansion is None:
             query_expansion = self.cfg.query_expansion
 
-        index, chunks, metadata = self.load()
+        try:
+            index, chunks, metadata = self.load()
+        except FileNotFoundError:
+            logger.warning("No index found. Please ingest documents first.")
+            return []
         expanded_queries = [query]
         if query_expansion:
             expanded_queries.extend(self._expand_query(query))
@@ -1465,6 +1469,9 @@ class EnhancedMainWindow(QtWidgets.QMainWindow):
 
     def _refresh_analytics(self):
         try:
+            if not os.path.exists(self.rag.rcfg.meta_path):
+                self.metrics_text.setPlainText("No index built yet. Please add documents and run indexing.")
+                return
             with open(self.rag.rcfg.meta_path, "r") as f:
                 metadata = json.load(f)
             metrics = [
